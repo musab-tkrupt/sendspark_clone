@@ -3,6 +3,14 @@ env/
 backend/.venv/
 backend/venv/
 
+# Environment files (keep examples committed)
+backend/.env
+backend/.env.local
+backend/.env.*.local
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
 # Python cache
 **/__pycache__/
 **/*.pyc
@@ -21,3 +29,4 @@ frontend/node_modules/
 # Misc
 .DS_Store
 Thumbs.db
+*.log
