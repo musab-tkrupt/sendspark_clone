@@ -1,0 +1,33 @@
+services:
+  backend:
+    image: python:3.11-slim
+    working_dir: /workspace/voice/backend
+    command: >
+      bash -lc "
+      apt-get update &&
+      apt-get install -y --no-install-recommends ffmpeg nodejs npm &&
+      pip install --no-cache-dir -r requirements.txt &&
+      cd /workspace &&
+      npm install &&
+      cd /workspace/voice/backend &&
+      uvicorn main:app --host 0.0.0.0 --port 8000
+      "
+    ports:
+      - "8000:8000"
+    volumes:
+      - ..:/workspace
+    restart: unless-stopped
+
+  frontend:
+    image: node:20-alpine
+    working_dir: /workspace/voice/frontend
+    command: sh -lc "npm install && npm run dev"
+    ports:
+      - "3001:3001"
+    volumes:
+      - ..:/workspace
+    environment:
+      - NODE_ENV=development
+    depends_on:
+      - backend
+    restart: unless-stopped

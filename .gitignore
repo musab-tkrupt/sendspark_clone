@@ -1,0 +1,23 @@
+# Python virtual environments
+env/
+backend/.venv/
+backend/venv/
+
+# Python cache
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Backend runtime artifacts
+backend/temp/
+backend/outputs/
+
+# Frontend build/runtime artifacts
+frontend/.next/
+frontend/out/
+frontend/node_modules/
+
+# Misc
+.DS_Store
+Thumbs.db
