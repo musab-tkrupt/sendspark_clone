@@ -28,7 +28,7 @@ model: ChatterboxTTS | None = None
 jobs: dict = {}
 composite_jobs: dict = {}
 
-SS_CLONE_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
+BACKEND_ROOT = os.path.abspath(os.path.dirname(__file__))
 
 os.makedirs("temp", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
@@ -245,14 +245,14 @@ def get_status(job_id: str):
 @app.post("/scroll")
 async def generate_scroll(url: str = Form(...)):
     job_id = str(uuid.uuid4())
-    jobs_dir = os.path.join(SS_CLONE_ROOT, ".jobs")
+    jobs_dir = os.path.join(BACKEND_ROOT, ".jobs")
     os.makedirs(jobs_dir, exist_ok=True)
     with open(os.path.join(jobs_dir, f"{job_id}.json"), "w") as f:
         json.dump({"status": "recording"}, f)
 
     subprocess.Popen(
-        ["node", "scripts/record.js", url, job_id],
-        cwd=SS_CLONE_ROOT,
+        ["node", "scripts/record-paged.js", url, job_id],
+        cwd=BACKEND_ROOT,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
@@ -261,7 +261,7 @@ async def generate_scroll(url: str = Form(...)):
 
 @app.get("/scroll-status/{job_id}")
 def scroll_status(job_id: str):
-    job_file = os.path.join(SS_CLONE_ROOT, ".jobs", f"{job_id}.json")
+    job_file = os.path.join(BACKEND_ROOT, ".jobs", f"{job_id}.json")
     if not os.path.exists(job_file):
         return JSONResponse({"status": "not_found"}, status_code=404)
     with open(job_file) as f:
@@ -271,7 +271,7 @@ def scroll_status(job_id: str):
 @app.get("/scroll-video/{filename}")
 def scroll_video(filename: str):
     filename = os.path.basename(filename)
-    path = os.path.join(SS_CLONE_ROOT, "outputs", filename)
+    path = os.path.join(BACKEND_ROOT, "outputs", filename)
     if not os.path.exists(path):
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(path, media_type="video/mp4")
@@ -395,7 +395,7 @@ async def run_composite(
         scroll_fn = contact["scroll_filename"]
         composite_jobs[job_id]["current"] = name
 
-        scroll_path = os.path.join(SS_CLONE_ROOT, "outputs", scroll_fn)
+        scroll_path = os.path.join(BACKEND_ROOT, "outputs", scroll_fn)
 
         if not os.path.exists(scroll_path):
             composite_jobs[job_id]["files"].append({"name": name, "error": "scroll video not found"})

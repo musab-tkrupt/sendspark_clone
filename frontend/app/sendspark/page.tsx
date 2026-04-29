@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 const API = "http://localhost:8000";
 const FALLBACK_URL = "https://tkrupt.com";
@@ -31,6 +32,7 @@ function uid() {
 }
 
 export default function SendSpark() {
+  const router = useRouter();
   // ── State ─────────────────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("contacts");
   const [contacts, setContacts] = useState<Contact[]>([
@@ -54,6 +56,7 @@ export default function SendSpark() {
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const [skipSeconds, setSkipSeconds] = useState(3);
   const [scrollStartSeconds, setScrollStartSeconds] = useState(0);
+  const [screenScale, setScreenScale] = useState(0.85);
 
   // Composite
   const [compositeJobId, setCompositeJobId] = useState<string | null>(null);
@@ -71,6 +74,18 @@ export default function SendSpark() {
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const contactsRef = useRef(contacts);
   contactsRef.current = contacts;
+
+  useEffect(() => {
+    const fromQuery = new URLSearchParams(window.location.search).get("step") as Step | null;
+    if (fromQuery && ["contacts", "scroll", "record", "results"].includes(fromQuery)) {
+      setStep(fromQuery);
+    }
+  }, []);
+
+  function goToStep(next: Step) {
+    setStep(next);
+    router.replace(`/sendspark?step=${next}`);
+  }
 
   // ── Contacts helpers ──────────────────────────────────────────────────────
   function addRow() {
@@ -133,7 +148,7 @@ export default function SendSpark() {
 
   // ── Step 2: scroll generation ─────────────────────────────────────────────
   async function startScrollGeneration() {
-    setStep("scroll");
+    goToStep("scroll");
     const updated = await Promise.all(
       contacts.map(async (c) => {
         if (!c.name.trim() || !c.website.trim()) return c;
@@ -229,33 +244,34 @@ export default function SendSpark() {
   }, [step]);
 
   async function startRecording() {
-    setError(null);
-    chunksRef.current = [];
-    setRecordSec(0);
+    try {
+      setError(null);
+      chunksRef.current = [];
+      setRecordSec(0);
 
-    if (recordMode === "face") {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      streamsRef.current = [stream];
-      if (faceVideoRef.current) faceVideoRef.current.srcObject = stream;
+      if (recordMode === "face") {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        streamsRef.current = [stream];
+        if (faceVideoRef.current) faceVideoRef.current.srcObject = stream;
 
-      const mr = new MediaRecorder(stream);
-      mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
-      mr.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "video/webm" });
-        setRecordedBlob(blob);
-        setRecordedUrl(URL.createObjectURL(blob));
-        stream.getTracks().forEach((t) => t.stop());
-        setIsRecording(false);
-        if (timerRef.current) clearInterval(timerRef.current);
-      };
-      mr.start(100);
-      mediaRecorderRef.current = mr;
-    } else {
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 30 } as MediaTrackConstraints,
-      });
-      const faceStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      streamsRef.current = [screenStream, faceStream];
+        const mr = new MediaRecorder(stream);
+        mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
+        mr.onstop = () => {
+          const blob = new Blob(chunksRef.current, { type: "video/webm" });
+          setRecordedBlob(blob);
+          setRecordedUrl(URL.createObjectURL(blob));
+          stream.getTracks().forEach((t) => t.stop());
+          setIsRecording(false);
+          if (timerRef.current) clearInterval(timerRef.current);
+        };
+        mr.start(100);
+        mediaRecorderRef.current = mr;
+      } else {
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({
+          video: { frameRate: 30 } as MediaTrackConstraints,
+        });
+        const faceStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        streamsRef.current = [screenStream, faceStream];
 
       const track = screenStream.getVideoTracks()[0].getSettings();
       const W = track.width || 1280;
@@ -284,7 +300,18 @@ export default function SendSpark() {
       const bY = H - bSize - margin;
 
       function draw() {
-        ctx.drawImage(sv, 0, 0, W, H);
+        // Draw the captured screen slightly inset to feel less zoomed in.
+        const scale = Math.max(0.7, Math.min(1, screenScale));
+        const srcW = sv.videoWidth || W;
+        const srcH = sv.videoHeight || H;
+        const fit = Math.min(W / srcW, H / srcH);
+        const drawW = srcW * fit * scale;
+        const drawH = srcH * fit * scale;
+        const drawX = (W - drawW) / 2;
+        const drawY = (H - drawH) / 2;
+        ctx.fillStyle = "black";
+        ctx.fillRect(0, 0, W, H);
+        ctx.drawImage(sv, drawX, drawY, drawW, drawH);
         ctx.save();
         ctx.beginPath();
         ctx.arc(bX + bSize / 2, bY + bSize / 2, bSize / 2, 0, Math.PI * 2);
@@ -303,7 +330,10 @@ export default function SendSpark() {
       const canvasStream = canvas.captureStream(30);
       faceStream.getAudioTracks().forEach((t) => canvasStream.addTrack(t));
 
-      const mr = new MediaRecorder(canvasStream, { mimeType: "video/webm;codecs=vp8,opus" });
+      const mime = "video/webm;codecs=vp8,opus";
+      const mr = MediaRecorder.isTypeSupported(mime)
+        ? new MediaRecorder(canvasStream, { mimeType: mime })
+        : new MediaRecorder(canvasStream);
       mr.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       mr.onstop = () => {
         cancelAnimationFrame(animFrameRef.current);
@@ -316,10 +346,22 @@ export default function SendSpark() {
       };
       mr.start(100);
       mediaRecorderRef.current = mr;
-    }
+        screenStream.getVideoTracks()[0].onended = () => {
+          if (mediaRecorderRef.current?.state === "recording") {
+            mediaRecorderRef.current.stop();
+          }
+        };
+      }
 
-    setIsRecording(true);
-    timerRef.current = setInterval(() => setRecordSec((s) => s + 1), 1000);
+      setIsRecording(true);
+      timerRef.current = setInterval(() => setRecordSec((s) => s + 1), 1000);
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Screen recording failed");
+      setIsRecording(false);
+      streamsRef.current.forEach((s) => s.getTracks().forEach((t) => t.stop()));
+      streamsRef.current = [];
+      if (timerRef.current) clearInterval(timerRef.current);
+    }
   }
 
   function stopRecording() {
@@ -331,7 +373,7 @@ export default function SendSpark() {
     if (!recordedBlob) return;
     setIsProcessing(true);
     setError(null);
-    setStep("results");
+    goToStep("results");
 
     const form = new FormData();
     form.append("face", recordedBlob, "face.webm");
@@ -400,7 +442,12 @@ export default function SendSpark() {
               }`}>
                 {i < stepIdx ? "✓" : i + 1}
               </div>
-              <span className="text-sm font-medium hidden sm:block">{s.label}</span>
+              <button
+                onClick={() => goToStep(s.key)}
+                className="text-sm font-medium hover:text-purple-300 transition"
+              >
+                {s.label}
+              </button>
             </div>
             {i < steps.length - 1 && (
               <div className={`flex-1 h-px mx-3 ${i < stepIdx ? "bg-purple-500" : "bg-gray-800"}`} />
@@ -548,11 +595,17 @@ export default function SendSpark() {
           </section>
 
           <button
-            onClick={() => setStep("record")}
+            onClick={() => goToStep("record")}
             disabled={!allScrollDone}
             className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed py-3.5 rounded-xl font-semibold transition"
           >
             {allScrollDone ? "Record Your Pitch →" : "Waiting for scroll videos…"}
+          </button>
+          <button
+            onClick={() => goToStep("contacts")}
+            className="w-full bg-gray-800 hover:bg-gray-700 py-2.5 rounded-xl text-sm font-medium transition"
+          >
+            ← Back to Contacts
           </button>
         </div>
       )}
@@ -693,6 +746,27 @@ export default function SendSpark() {
             </div>
           </div>
 
+          {recordMode === "screen" && (
+            <div className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-2xl px-6 py-4">
+              <div>
+                <p className="text-sm font-medium">Screen zoom-out amount</p>
+                <p className="text-xs text-gray-500 mt-0.5">Lower value = more zoomed out (default 90%).</p>
+              </div>
+              <div className="flex items-center gap-3 min-w-48">
+                <input
+                  type="range"
+                  min={0.75}
+                  max={1}
+                  step={0.01}
+                  value={screenScale}
+                  onChange={(e) => setScreenScale(Number(e.target.value))}
+                  className="w-28"
+                />
+                <span className="text-sm text-gray-300 w-12 text-right">{Math.round(screenScale * 100)}%</span>
+              </div>
+            </div>
+          )}
+
           {error && <p className="text-red-400 text-sm">Error: {error}</p>}
 
           <button
@@ -703,6 +777,12 @@ export default function SendSpark() {
             {voiceFile
               ? `Process — clone voice + composite ${contacts.filter((c) => c.scrollFilename).length} videos →`
               : `Composite ${contacts.filter((c) => c.scrollFilename).length} videos →`}
+          </button>
+          <button
+            onClick={() => goToStep("scroll")}
+            className="w-full bg-gray-800 hover:bg-gray-700 py-2.5 rounded-xl text-sm font-medium transition"
+          >
+            ← Back to Scroll Videos
           </button>
         </div>
       )}
@@ -795,6 +875,12 @@ export default function SendSpark() {
               </div>
             ))}
           </div>
+          <button
+            onClick={() => goToStep("record")}
+            className="w-full bg-gray-800 hover:bg-gray-700 py-2.5 rounded-xl text-sm font-medium transition"
+          >
+            ← Back to Record
+          </button>
         </div>
       )}
     </main>
