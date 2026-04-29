@@ -4,7 +4,14 @@ import { useEffect, useRef, useState } from "react";
 
 const API = "http://localhost:8000";
 
-type FileEntry = { name: string; filename?: string; concat_filename?: string; video_filename?: string; error?: string };
+type FileEntry = {
+  name: string;
+  filename?: string;
+  concat_filename?: string;
+  video_filename?: string;
+  video_public_url?: string | null;
+  error?: string;
+};
 type Job = {
   status: "processing" | "done";
   total: number;
@@ -345,7 +352,11 @@ export default function VoiceCloner() {
                         </a>
                       )}
                       {entry.video_filename && (
-                        <a href={`${API}/download/${entry.video_filename}`} download className="text-green-400 hover:text-green-300 transition">
+                        <a
+                          href={entry.video_public_url || `${API}/download/${entry.video_filename}`}
+                          download
+                          className="text-green-400 hover:text-green-300 transition"
+                        >
                           Video
                         </a>
                       )}
@@ -355,7 +366,7 @@ export default function VoiceCloner() {
 
                 {entry.video_filename ? (
                   <video
-                    src={`${API}/download/${entry.video_filename}`}
+                    src={entry.video_public_url || `${API}/download/${entry.video_filename}`}
                     controls
                     className="w-full rounded-lg border border-gray-700 bg-black max-h-56 object-contain"
                   />

@@ -4,3 +4,4 @@ python-multipart
 chatterbox-tts
 torch
 torchaudio
+supabase>=2,<3

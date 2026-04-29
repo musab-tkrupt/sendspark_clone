@@ -15,7 +15,7 @@ type Contact = {
   scrollFilename?: string;
   isFallback?: boolean;
 };
-type CompositeFile = { name: string; filename?: string; error?: string };
+type CompositeFile = { name: string; filename?: string; public_url?: string; error?: string };
 type CompositeJob = {
   status: "processing" | "done";
   total: number;
@@ -751,18 +751,43 @@ export default function SendSpark() {
                   {entry.error ? (
                     <span className="text-red-400 text-xs">{entry.error}</span>
                   ) : entry.filename ? (
-                    <a
-                      href={`${API}/download/${entry.filename}`}
-                      download
-                      className="text-purple-400 hover:text-purple-300 text-xs transition"
-                    >
-                      Download
-                    </a>
+                    <div className="flex items-center gap-3">
+                      <a
+                        href={entry.public_url || `${API}/download/${entry.filename}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-purple-400 hover:text-purple-300 text-xs transition"
+                      >
+                        Open
+                      </a>
+                      <a
+                        href={entry.public_url || `${API}/download/${entry.filename}`}
+                        download
+                        className="text-blue-400 hover:text-blue-300 text-xs transition"
+                      >
+                        Download
+                      </a>
+                    </div>
                   ) : null}
                 </div>
+                {entry.public_url && (
+                  <div className="flex items-center gap-2">
+                    <input
+                      readOnly
+                      value={entry.public_url}
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                    />
+                    <button
+                      onClick={() => navigator.clipboard.writeText(entry.public_url || "")}
+                      className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
+                    >
+                      Copy URL
+                    </button>
+                  </div>
+                )}
                 {entry.filename && (
                   <video
-                    src={`${API}/download/${entry.filename}`}
+                    src={entry.public_url || `${API}/download/${entry.filename}`}
                     controls
                     className="w-full rounded-lg border border-gray-700 bg-black max-h-64 object-contain"
                   />

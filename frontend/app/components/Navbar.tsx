@@ -6,6 +6,7 @@ import { usePathname } from "next/navigation";
 const links = [
   { href: "/", label: "Voice Cloner" },
   { href: "/sendspark", label: "SendSpark" },
+  { href: "/dependency-check", label: "Dependency Check" },
 ];
 
 export default function Navbar() {

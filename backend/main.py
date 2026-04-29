@@ -1,5 +1,6 @@
 import asyncio
 import json
+import mimetypes
 import os
 import subprocess
 import uuid
@@ -12,6 +13,7 @@ from chatterbox.tts import ChatterboxTTS
 from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from supabase import Client, create_client
 
 app = FastAPI()
 
@@ -32,6 +34,54 @@ os.makedirs("temp", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
 
 
+def _load_local_env() -> None:
+    env_path = os.path.join(os.path.dirname(__file__), ".env")
+    if not os.path.exists(env_path):
+        return
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            key, value = stripped.split("=", 1)
+            key = key.strip()
+            value = value.strip().strip('"').strip("'")
+            if key and key not in os.environ:
+                os.environ[key] = value
+
+
+_load_local_env()
+
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "Videos").strip()
+SUPABASE_PATH_PREFIX = os.getenv("SUPABASE_PATH_PREFIX", "sendspark").strip().strip("/")
+
+supabase_client: Client | None = None
+if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
+    supabase_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _supabase_object_key(filename: str, category: str) -> str:
+    base = f"{category}/{filename}" if category else filename
+    if SUPABASE_PATH_PREFIX:
+        return f"{SUPABASE_PATH_PREFIX}/{base}"
+    return base
+
+
+def _upload_file_to_supabase(local_path: str, object_key: str) -> str | None:
+    if not supabase_client or not SUPABASE_STORAGE_BUCKET:
+        return None
+    content_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+    with open(local_path, "rb") as f:
+        supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
+            path=object_key,
+            file=f,
+            file_options={"content-type": content_type, "upsert": "true"},
+        )
+    return supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(object_key)
+
+
 # ── Startup ──────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -46,6 +96,42 @@ async def load_model():
 @app.get("/health")
 def health():
     return {"status": "ok", "model_loaded": model is not None}
+
+
+@app.get("/dependency-check")
+def dependency_check():
+    required = {
+        "SUPABASE_URL": bool(SUPABASE_URL),
+        "SUPABASE_SERVICE_ROLE_KEY": bool(SUPABASE_SERVICE_ROLE_KEY),
+        "SUPABASE_STORAGE_BUCKET": bool(SUPABASE_STORAGE_BUCKET),
+        "SUPABASE_PATH_PREFIX": bool(SUPABASE_PATH_PREFIX),
+    }
+    writable = False
+    public_url = None
+    error = None
+    if supabase_client and SUPABASE_STORAGE_BUCKET:
+        try:
+            key = _supabase_object_key(f"dependency-check-{uuid.uuid4()}.txt", "checks")
+            data = b"dependency check"
+            supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
+                path=key,
+                file=data,
+                file_options={"content-type": "text/plain", "upsert": "true"},
+            )
+            public_url = supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(key)
+            writable = True
+        except Exception as exc:
+            error = str(exc)
+
+    return {
+        "supabase_configured": bool(supabase_client),
+        "required_vars_present": required,
+        "bucket": SUPABASE_STORAGE_BUCKET,
+        "path_prefix": SUPABASE_PATH_PREFIX,
+        "storage_write_ok": writable,
+        "test_public_url": public_url,
+        "error": error,
+    }
 
 
 # ── Voice cloning ─────────────────────────────────────────────────────────────
@@ -129,6 +215,13 @@ async def run_generation(
                 mp4_path = f"outputs/{mp4_filename}"
                 await asyncio.to_thread(_merge_hey_with_video, wav_path, video_path, mp4_path)
                 entry["video_filename"] = mp4_filename
+                try:
+                    object_key = _supabase_object_key(mp4_filename, "voice-cloner")
+                    entry["video_public_url"] = await asyncio.to_thread(
+                        _upload_file_to_supabase, mp4_path, object_key
+                    )
+                except Exception:
+                    entry["video_public_url"] = None
 
             jobs[job_id]["files"].append(entry)
         except Exception as e:
@@ -330,6 +423,13 @@ async def run_composite(
                 )
 
             composite_jobs[job_id]["files"].append({"name": name, "filename": out_fn})
+            try:
+                object_key = _supabase_object_key(out_fn, "sendspark")
+                public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
+                if public_url:
+                    composite_jobs[job_id]["files"][-1]["public_url"] = public_url
+            except Exception:
+                composite_jobs[job_id]["files"][-1]["public_url"] = None
         except Exception as e:
             composite_jobs[job_id]["files"].append({"name": name, "error": str(e)})
 
