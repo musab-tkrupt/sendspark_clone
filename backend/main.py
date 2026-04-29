@@ -366,7 +366,7 @@ def _composite_with_voice(
                 "geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
                 "a='if(lt(hypot(X-100,Y-100),100),255,0)'[face];"
                 "[scroll][face]overlay=20:main_h-220[vout];"
-                f"[2:a]atrim=end={hey_end},asetpts=PTS-STARTPTS,aresample=44100[a_hey];"
+                f"[2:a]apad,atrim=end={hey_end},asetpts=PTS-STARTPTS,aresample=44100[a_hey];"
                 f"[1:a]atrim=start={skip_seconds},asetpts=PTS-STARTPTS,aresample=44100[a_recorded];"
                 "[a_hey][a_recorded]concat=n=2:v=0:a=1[aout]"
             ),

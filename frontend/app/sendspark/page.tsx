@@ -790,6 +790,42 @@ export default function SendSpark() {
       {/* ── STEP 4: Results ──────────────────────────────────────────────── */}
       {step === "results" && (
         <div className="w-full flex flex-col gap-4">
+          <div className="bg-gray-900 border border-gray-800 rounded-2xl p-4 flex flex-col gap-3">
+            <p className="text-sm font-medium">Re-generate with timing adjustments</p>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="flex items-center justify-between bg-gray-800 rounded-xl px-3 py-2">
+                <span className="text-xs text-gray-300">Cloned intro / skip audio (sec)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.5}
+                  value={skipSeconds}
+                  onChange={(e) => setSkipSeconds(Number(e.target.value))}
+                  className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs outline-none focus:border-purple-500 text-center"
+                />
+              </div>
+              <div className="flex items-center justify-between bg-gray-800 rounded-xl px-3 py-2">
+                <span className="text-xs text-gray-300">Scroll start (sec)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={60}
+                  step={0.5}
+                  value={scrollStartSeconds}
+                  onChange={(e) => setScrollStartSeconds(Number(e.target.value))}
+                  className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs outline-none focus:border-purple-500 text-center"
+                />
+              </div>
+            </div>
+            <button
+              onClick={processVideos}
+              disabled={!recordedBlob || isProcessing}
+              className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed py-2.5 rounded-lg text-sm font-semibold transition"
+            >
+              Re-generate Videos With New Timings
+            </button>
+          </div>
           <div className="flex items-center justify-between">
             <div>
               <h2 className="font-semibold text-xl">
