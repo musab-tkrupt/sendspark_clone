@@ -5,3 +5,4 @@ chatterbox-tts
 torch
 torchaudio
 supabase>=2,<3
+httpx>=0.27,<1

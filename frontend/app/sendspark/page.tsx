@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
 const API = "http://localhost:8000";
 const FALLBACK_URL = "https://tkrupt.com";
+const SCROLL_BATCH_SIZE = 5;
 
-type ScrollStatus = "idle" | "generating" | "done" | "error";
+type ScrollStatus = "idle" | "queued" | "generating" | "done" | "error";
 type Contact = {
   id: string;
   name: string;
@@ -16,7 +17,12 @@ type Contact = {
   scrollFilename?: string;
   isFallback?: boolean;
 };
-type CompositeFile = { name: string; filename?: string; public_url?: string; error?: string };
+type CompositeFile = {
+  name: string;
+  filename?: string;
+  public_url?: string;
+  error?: string;
+};
 type CompositeJob = {
   status: "processing" | "done";
   total: number;
@@ -31,8 +37,38 @@ function uid() {
   return String(Date.now() + Math.random());
 }
 
+function parseCsvRow(line: string): string[] {
+  const out: string[] = [];
+  let cur = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        cur += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+    if (ch === "," && !inQuotes) {
+      out.push(cur.trim());
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  out.push(cur.trim());
+  return out.map((v) => v.replace(/^["']|["']$/g, "").trim());
+}
+
 export default function SendSpark() {
   const router = useRouter();
+  const pathname = usePathname();
+  const isElevenLabsMode = pathname === "/sendspark-elevenlabs";
+  const currentBaseRoute = isElevenLabsMode ? "/sendspark-elevenlabs" : "/sendspark";
+  const compositeStartEndpoint = isElevenLabsMode ? `${API}/composite-elevenlabs` : `${API}/composite`;
   // ── State ─────────────────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("contacts");
   const [contacts, setContacts] = useState<Contact[]>([
@@ -73,6 +109,7 @@ export default function SendSpark() {
   const streamsRef = useRef<MediaStream[]>([]);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const contactsRef = useRef(contacts);
+  const scrollBatchLaunchingRef = useRef(false);
   contactsRef.current = contacts;
 
   useEffect(() => {
@@ -84,7 +121,7 @@ export default function SendSpark() {
 
   function goToStep(next: Step) {
     setStep(next);
-    router.replace(`/sendspark?step=${next}`);
+    router.replace(`${currentBaseRoute}?step=${next}`);
   }
 
   // ── Contacts helpers ──────────────────────────────────────────────────────
@@ -106,12 +143,52 @@ export default function SendSpark() {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const text = ev.target?.result as string;
-      const rows = text.trim().split("\n");
+      const rows = text
+        .split(/\r?\n/)
+        .map((r) => r.trim())
+        .filter(Boolean);
+      if (!rows.length) return;
+
+      const header = parseCsvRow(rows[0]).map((h) => h.toLowerCase().trim());
+      const findHeaderIndex = (candidates: string[]) =>
+        header.findIndex((h) => candidates.some((c) => h === c || h.includes(c)));
+
+      const fullNameIdx = findHeaderIndex(["full name"]);
+      const firstNameIdx = findHeaderIndex(["first name"]);
+      const lastNameIdx = findHeaderIndex(["last name"]);
+
+      // Strongly prioritize company site columns; avoid person linkedin/url columns.
+      const companyWebsiteIdx = findHeaderIndex(["company website"]);
+      const companyDomainIdx = findHeaderIndex(["company domain"]);
+      const websiteIdx = findHeaderIndex(["website"]);
+      const domainIdx = findHeaderIndex(["domain"]);
+
       const parsed: Contact[] = [];
-      for (const row of rows) {
-        const cols = row.split(",").map((c) => c.replace(/^["']|["']$/g, "").trim());
-        if (!cols[0] || cols[0].toLowerCase() === "name") continue;
-        parsed.push({ id: uid(), name: cols[0], website: cols[1] || "", scrollStatus: "idle" });
+      for (let i = 1; i < rows.length; i++) {
+        const cols = parseCsvRow(rows[i]);
+        const fullName = fullNameIdx >= 0 ? cols[fullNameIdx] || "" : "";
+        const first = firstNameIdx >= 0 ? cols[firstNameIdx] || "" : "";
+        const last = lastNameIdx >= 0 ? cols[lastNameIdx] || "" : "";
+        const name = fullName || `${first} ${last}`.trim() || cols[0] || "";
+        const websiteCandidates = [
+          companyWebsiteIdx >= 0 ? cols[companyWebsiteIdx] || "" : "",
+          companyDomainIdx >= 0 ? cols[companyDomainIdx] || "" : "",
+          websiteIdx >= 0 ? cols[websiteIdx] || "" : "",
+          domainIdx >= 0 ? cols[domainIdx] || "" : "",
+          cols[1] || "",
+        ]
+          .map((v) => v.trim())
+          .filter(Boolean);
+
+        let website = websiteCandidates[0] || "";
+        if (website && !website.startsWith("http")) {
+          website = `https://${website.replace(/^www\./i, "")}`;
+        }
+        if (website.toLowerCase().includes("linkedin.com")) {
+          continue;
+        }
+        if (!name || !website) continue;
+        parsed.push({ id: uid(), name, website, scrollStatus: "idle" });
       }
       if (parsed.length) setContacts(parsed);
     };
@@ -147,27 +224,55 @@ export default function SendSpark() {
   }
 
   // ── Step 2: scroll generation ─────────────────────────────────────────────
+  async function launchScrollBatch(batch: Contact[]) {
+    if (scrollBatchLaunchingRef.current || !batch.length) return;
+    scrollBatchLaunchingRef.current = true;
+    try {
+      const updated = await Promise.all(
+        batch.map(async (c) => {
+          let url = c.website.trim();
+          if (!url.startsWith("http")) url = "https://" + url;
+          try {
+            const res = await fetch(`${API}/scroll`, {
+              method: "POST",
+              body: new URLSearchParams({ url }),
+            });
+            if (!res.ok) throw new Error();
+            const { jobId } = await res.json();
+            return {
+              id: c.id,
+              patch: { scrollJobId: jobId, scrollStatus: "queued" as ScrollStatus },
+            };
+          } catch {
+            return { id: c.id, patch: { scrollStatus: "error" as ScrollStatus } };
+          }
+        })
+      );
+
+      const updates = new Map(updated.map((u) => [u.id, u.patch]));
+      setContacts((prev) => prev.map((c) => ({ ...c, ...(updates.get(c.id) || {}) })));
+    } finally {
+      scrollBatchLaunchingRef.current = false;
+    }
+  }
+
   async function startScrollGeneration() {
     goToStep("scroll");
-    const updated = await Promise.all(
-      contacts.map(async (c) => {
-        if (!c.name.trim() || !c.website.trim()) return c;
-        let url = c.website.trim();
-        if (!url.startsWith("http")) url = "https://" + url;
-        try {
-          const res = await fetch(`${API}/scroll`, {
-            method: "POST",
-            body: new URLSearchParams({ url }),
-          });
-          if (!res.ok) throw new Error();
-          const { jobId } = await res.json();
-          return { ...c, scrollJobId: jobId, scrollStatus: "generating" as ScrollStatus };
-        } catch {
-          return { ...c, scrollStatus: "error" as ScrollStatus };
-        }
-      })
+    const resetContacts = contacts.map((c) =>
+      c.name.trim() && c.website.trim()
+        ? {
+            ...c,
+            scrollJobId: undefined,
+            scrollFilename: undefined,
+            scrollStatus: "idle" as ScrollStatus,
+            isFallback: false,
+          }
+        : c
     );
-    setContacts(updated);
+    setContacts(resetContacts);
+    await launchScrollBatch(
+      resetContacts.filter((c) => c.name.trim() && c.website.trim()).slice(0, SCROLL_BATCH_SIZE)
+    );
   }
 
   // Poll scroll jobs
@@ -175,9 +280,15 @@ export default function SendSpark() {
     if (step !== "scroll") return;
     const interval = setInterval(async () => {
       const pending = contactsRef.current.filter(
-        (c) => c.scrollStatus === "generating" && c.scrollJobId
+        (c) => (c.scrollStatus === "queued" || c.scrollStatus === "generating") && c.scrollJobId
       );
-      if (!pending.length) return;
+      if (!pending.length) {
+        const nextBatch = contactsRef.current
+          .filter((c) => c.name.trim() && c.website.trim() && c.scrollStatus === "idle")
+          .slice(0, SCROLL_BATCH_SIZE);
+        if (nextBatch.length) void launchScrollBatch(nextBatch);
+        return;
+      }
 
       const updates: Record<string, Partial<Contact>> = {};
       await Promise.all(
@@ -185,7 +296,11 @@ export default function SendSpark() {
           const res = await fetch(`${API}/scroll-status/${c.scrollJobId}`);
           if (!res.ok) return;
           const data = await res.json();
-          if (data.status === "done") {
+          if (data.status === "queued") {
+            updates[c.id] = { scrollStatus: "queued" };
+          } else if (data.status === "recording") {
+            updates[c.id] = { scrollStatus: "generating" };
+          } else if (data.status === "done") {
             updates[c.id] = { scrollStatus: "done", scrollFilename: data.filename };
           } else if (data.status === "error") {
             if (!c.isFallback) {
@@ -248,6 +363,9 @@ export default function SendSpark() {
       setError(null);
       chunksRef.current = [];
       setRecordSec(0);
+      // Prevent stale clip reuse when user records again.
+      setRecordedBlob(null);
+      setRecordedUrl(null);
 
       if (recordMode === "face") {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
@@ -368,11 +486,25 @@ export default function SendSpark() {
     mediaRecorderRef.current?.stop();
   }
 
+  function handleRecordedVideoUpload(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    const url = URL.createObjectURL(file);
+    setRecordedUrl(url);
+    setRecordedBlob(file);
+    setIsRecording(false);
+    if (timerRef.current) clearInterval(timerRef.current);
+  }
+
   // ── Step 4: composite ─────────────────────────────────────────────────────
   async function processVideos() {
     if (!recordedBlob) return;
     setIsProcessing(true);
     setError(null);
+    // Clear previous run immediately so user sees fresh generation state.
+    setCompositeJob(null);
+    setCompositeJobId(null);
     goToStep("results");
 
     const form = new FormData();
@@ -388,7 +520,7 @@ export default function SendSpark() {
     );
 
     try {
-      const res = await fetch(`${API}/composite`, { method: "POST", body: form });
+      const res = await fetch(compositeStartEndpoint, { method: "POST", body: form });
       if (!res.ok) throw new Error("Failed to start processing");
       const { jobId } = await res.json();
       setCompositeJobId(jobId);
@@ -396,6 +528,34 @@ export default function SendSpark() {
       setError(e instanceof Error ? e.message : "Unknown error");
       setIsProcessing(false);
     }
+  }
+
+  function downloadResultsCsv() {
+    if (!compositeJob?.files?.length) return;
+    const contactByName = new Map(
+      contacts.map((c) => [c.name.trim().toLowerCase(), c.website.trim()])
+    );
+
+    const escapeCsv = (val: string) => `"${val.replace(/"/g, '""')}"`;
+    const header = "Name,Website URL,Video URL";
+    const rows = compositeJob.files
+      .filter((entry) => !entry.error && (entry.public_url || entry.filename))
+      .map((entry) => {
+        const website = contactByName.get(entry.name.trim().toLowerCase()) || "";
+        const videoUrl = entry.public_url || `${API}/download/${entry.filename}`;
+        return [entry.name, website, videoUrl].map((v) => escapeCsv(v || "")).join(",");
+      });
+
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `video-links-${compositeJobId || "results"}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
   }
 
   // Poll composite
@@ -429,7 +589,11 @@ export default function SendSpark() {
       {/* Header */}
       <div className="w-full">
         <h1 className="text-4xl font-bold tracking-tight mb-1">SendSpark Clone</h1>
-        <p className="text-gray-400 text-sm">Personalised video outreach — website scroll background + cloned voice greeting</p>
+        <p className="text-gray-400 text-sm">
+          {isElevenLabsMode
+            ? "Personalised video outreach — ElevenLabs cloned greeting + website scroll background"
+            : "Personalised video outreach — website scroll background + cloned voice greeting"}
+        </p>
       </div>
 
       {/* Step indicator */}
@@ -572,6 +736,12 @@ export default function SendSpark() {
                   </div>
                   <div className="flex items-center gap-3">
                     {c.scrollStatus === "idle" && <span className="text-xs text-gray-600">Pending</span>}
+                    {c.scrollStatus === "queued" && (
+                      <span className="text-xs text-gray-400 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
+                        Queued…
+                      </span>
+                    )}
                     {c.scrollStatus === "generating" && (
                       <span className="text-xs text-yellow-400 flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
@@ -675,13 +845,24 @@ export default function SendSpark() {
 
             <div className="flex gap-3 items-center">
               {!isRecording ? (
-                <button
-                  onClick={startRecording}
-                  className="bg-red-600 hover:bg-red-500 px-6 py-2.5 rounded-lg text-sm font-medium transition flex items-center gap-2"
-                >
-                  <span className="w-2.5 h-2.5 rounded-full bg-white" />
-                  {recordedUrl ? "Re-record" : "Record"}
-                </button>
+                <>
+                  <button
+                    onClick={startRecording}
+                    className="bg-red-600 hover:bg-red-500 px-6 py-2.5 rounded-lg text-sm font-medium transition flex items-center gap-2"
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-white" />
+                    {recordedUrl ? "Re-record" : "Record"}
+                  </button>
+                  <label className="bg-gray-700 hover:bg-gray-600 px-4 py-2.5 rounded-lg text-sm font-medium transition cursor-pointer whitespace-nowrap">
+                    Upload Pre-Recorded
+                    <input
+                      type="file"
+                      accept="video/*"
+                      className="hidden"
+                      onChange={handleRecordedVideoUpload}
+                    />
+                  </label>
+                </>
               ) : (
                 <button
                   onClick={stopRecording}
@@ -775,7 +956,7 @@ export default function SendSpark() {
             className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed py-3.5 rounded-xl font-semibold transition"
           >
             {voiceFile
-              ? `Process — clone voice + composite ${contacts.filter((c) => c.scrollFilename).length} videos →`
+              ? `Process — ${isElevenLabsMode ? "ElevenLabs clone" : "clone voice"} + composite ${contacts.filter((c) => c.scrollFilename).length} videos →`
               : `Composite ${contacts.filter((c) => c.scrollFilename).length} videos →`}
           </button>
           <button
@@ -823,7 +1004,7 @@ export default function SendSpark() {
               disabled={!recordedBlob || isProcessing}
               className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed py-2.5 rounded-lg text-sm font-semibold transition"
             >
-              Re-generate Videos With New Timings
+              {isProcessing ? "Re-generating videos..." : "Re-generate Videos With New Timings"}
             </button>
           </div>
           <div className="flex items-center justify-between">
@@ -839,12 +1020,20 @@ export default function SendSpark() {
               )}
             </div>
             {compositeJob?.status === "done" && compositeJobId && (
-              <a
-                href={`${API}/composite-download-all/${compositeJobId}`}
-                className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm transition"
-              >
-                Download All (ZIP)
-              </a>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={downloadResultsCsv}
+                  className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm transition"
+                >
+                  Download CSV
+                </button>
+                <a
+                  href={`${API}/composite-download-all/${compositeJobId}`}
+                  className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm transition"
+                >
+                  Download All (ZIP)
+                </a>
+              </div>
             )}
           </div>
 
@@ -858,6 +1047,13 @@ export default function SendSpark() {
           )}
 
           {error && <p className="text-red-400 text-sm">Error: {error}</p>}
+
+          {isProcessing && (!compositeJob || compositeJob.done === 0) && (
+            <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 flex items-center gap-3 text-sm text-gray-300">
+              <span className="w-3 h-3 rounded-full border-2 border-purple-400 border-t-transparent animate-spin" />
+              Generating fresh videos with your new timing settings...
+            </div>
+          )}
 
           <div className="flex flex-col gap-4">
             {(compositeJob?.files || []).map((entry) => (

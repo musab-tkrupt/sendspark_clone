@@ -6,6 +6,8 @@ import { usePathname } from "next/navigation";
 const links = [
   { href: "/", label: "Voice Cloner" },
   { href: "/sendspark", label: "SendSpark" },
+  { href: "/sendspark-elevenlabs", label: "SendSpark (11Labs)" },
+  { href: "/elevenlabs-test", label: "11Labs Test" },
   { href: "/steps1", label: "Steps" },
   { href: "/dependency-check", label: "Dependency Check" },
 ];

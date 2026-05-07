@@ -7,6 +7,7 @@ import uuid
 import zipfile
 from io import BytesIO
 
+import httpx
 import torch
 import torchaudio
 from chatterbox.tts import ChatterboxTTS
@@ -56,6 +57,9 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
 SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "Videos").strip()
 SUPABASE_PATH_PREFIX = os.getenv("SUPABASE_PATH_PREFIX", "sendspark").strip().strip("/")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
+ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128").strip()
 
 supabase_client: Client | None = None
 if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
@@ -82,6 +86,109 @@ def _upload_file_to_supabase(local_path: str, object_key: str) -> str | None:
     return supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(object_key)
 
 
+def _elevenlabs_headers() -> dict[str, str]:
+    if not ELEVENLABS_API_KEY:
+        raise RuntimeError("ELEVENLABS_API_KEY is missing in backend .env")
+    return {"xi-api-key": ELEVENLABS_API_KEY}
+
+
+def _elevenlabs_create_ivc_voice(sample_audio_path: str, voice_name: str) -> str:
+    normalized_path = sample_audio_path
+    if not sample_audio_path.lower().endswith(".wav"):
+        normalized_path = f"{os.path.splitext(sample_audio_path)[0]}_elevenlabs.wav"
+        subprocess.run(
+            [
+                "ffmpeg",
+                "-y",
+                "-i",
+                sample_audio_path,
+                "-ac",
+                "1",
+                "-ar",
+                "44100",
+                normalized_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+
+    with open(normalized_path, "rb") as sample_file:
+        files = [
+            (
+                "files",
+                (
+                    os.path.basename(normalized_path),
+                    sample_file,
+                    "audio/wav",
+                ),
+            )
+        ]
+        data = {"name": voice_name[:48], "remove_background_noise": "false"}
+        response = httpx.post(
+            "https://api.elevenlabs.io/v1/voices/add",
+            headers=_elevenlabs_headers(),
+            data=data,
+            files=files,
+            timeout=120,
+        )
+    if response.status_code >= 400:
+        details = response.text.strip()
+        raise RuntimeError(
+            f"ElevenLabs voice clone failed ({response.status_code}): {details or 'No details provided'}"
+        )
+    payload = response.json()
+    voice_id = (payload or {}).get("voice_id")
+    if not voice_id:
+        raise RuntimeError("ElevenLabs did not return a voice_id")
+    return voice_id
+
+
+def _elevenlabs_tts_to_file(voice_id: str, text: str, output_path: str) -> None:
+    response = httpx.post(
+        f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}",
+        params={"output_format": ELEVENLABS_OUTPUT_FORMAT},
+        headers={
+            **_elevenlabs_headers(),
+            "Content-Type": "application/json",
+            "Accept": "audio/mpeg",
+        },
+        json={
+            "text": text,
+            "model_id": ELEVENLABS_MODEL_ID,
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75,
+                "style": 0.0,
+                "use_speaker_boost": True,
+            },
+        },
+        timeout=120,
+    )
+    response.raise_for_status()
+    with open(output_path, "wb") as f:
+        f.write(response.content)
+
+
+def _elevenlabs_delete_voice(voice_id: str) -> None:
+    response = httpx.delete(
+        f"https://api.elevenlabs.io/v1/voices/{voice_id}",
+        headers=_elevenlabs_headers(),
+        timeout=60,
+    )
+    response.raise_for_status()
+
+
+def _elevenlabs_models() -> list[dict]:
+    response = httpx.get(
+        "https://api.elevenlabs.io/v1/models",
+        headers=_elevenlabs_headers(),
+        timeout=30,
+    )
+    response.raise_for_status()
+    models = response.json()
+    return models if isinstance(models, list) else []
+
+
 # ── Startup ──────────────────────────────────────────────────────────────────
 
 @app.on_event("startup")
@@ -96,6 +203,72 @@ async def load_model():
 @app.get("/health")
 def health():
     return {"status": "ok", "model_loaded": model is not None}
+
+
+@app.get("/elevenlabs/models")
+def elevenlabs_models():
+    if not ELEVENLABS_API_KEY:
+        return JSONResponse({"error": "ELEVENLABS_API_KEY is missing"}, status_code=503)
+    try:
+        models = _elevenlabs_models()
+        return {"count": len(models), "models": models}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/elevenlabs/test-tts")
+async def elevenlabs_test_tts(
+    text: str = Form("Hello from ElevenLabs test."),
+    voice_id: str = Form(...),
+):
+    if not ELEVENLABS_API_KEY:
+        return JSONResponse({"error": "ELEVENLABS_API_KEY is missing"}, status_code=503)
+    out_fn = f"elevenlabs-test-{uuid.uuid4()}.mp3"
+    out_path = os.path.join(BACKEND_ROOT, "outputs", out_fn)
+    try:
+        await asyncio.to_thread(_elevenlabs_tts_to_file, voice_id.strip(), text.strip(), out_path)
+        return {"filename": out_fn, "download_url": f"/download/{out_fn}"}
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@app.post("/elevenlabs/test-clone")
+async def elevenlabs_test_clone(
+    sample_audio: UploadFile = File(...),
+    name: str = Form("cursor-test-voice"),
+    delete_after_test: bool = Form(True),
+):
+    if not ELEVENLABS_API_KEY:
+        return JSONResponse({"error": "ELEVENLABS_API_KEY is missing"}, status_code=503)
+
+    ext = os.path.splitext(sample_audio.filename or "")[1] or ".wav"
+    sample_path = os.path.join(BACKEND_ROOT, "temp", f"elevenlabs-sample-{uuid.uuid4()}{ext}")
+    with open(sample_path, "wb") as f:
+        f.write(await sample_audio.read())
+
+    voice_id: str | None = None
+    deleted = False
+    try:
+        voice_id = await asyncio.to_thread(_elevenlabs_create_ivc_voice, sample_path, name)
+        return_payload = {"voice_id": voice_id, "deleted": False}
+        if delete_after_test:
+            await asyncio.to_thread(_elevenlabs_delete_voice, voice_id)
+            deleted = True
+            return_payload["deleted"] = True
+        return return_payload
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    finally:
+        try:
+            if os.path.exists(sample_path):
+                os.remove(sample_path)
+        except Exception:
+            pass
+        if voice_id and delete_after_test and not deleted:
+            try:
+                await asyncio.to_thread(_elevenlabs_delete_voice, voice_id)
+            except Exception:
+                pass
 
 
 @app.get("/dependency-check")
@@ -123,6 +296,22 @@ def dependency_check():
         except Exception as exc:
             error = str(exc)
 
+    elevenlabs_required = {
+        "ELEVENLABS_API_KEY": bool(ELEVENLABS_API_KEY),
+    }
+    elevenlabs_api_ok = False
+    elevenlabs_error = None
+    elevenlabs_model_available = False
+    if ELEVENLABS_API_KEY:
+        try:
+            models = _elevenlabs_models()
+            elevenlabs_api_ok = True
+            elevenlabs_model_available = any(
+                (m.get("model_id") == ELEVENLABS_MODEL_ID) for m in models if isinstance(m, dict)
+            )
+        except Exception as exc:
+            elevenlabs_error = str(exc)
+
     return {
         "supabase_configured": bool(supabase_client),
         "required_vars_present": required,
@@ -131,6 +320,13 @@ def dependency_check():
         "storage_write_ok": writable,
         "test_public_url": public_url,
         "error": error,
+        "elevenlabs_configured": bool(ELEVENLABS_API_KEY),
+        "elevenlabs_required_vars_present": elevenlabs_required,
+        "elevenlabs_api_ok": elevenlabs_api_ok,
+        "elevenlabs_model_id": ELEVENLABS_MODEL_ID,
+        "elevenlabs_model_available": elevenlabs_model_available,
+        "elevenlabs_output_format": ELEVENLABS_OUTPUT_FORMAT,
+        "elevenlabs_error": elevenlabs_error,
     }
 
 
@@ -318,6 +514,53 @@ async def composite_videos(
     return {"jobId": job_id}
 
 
+@app.post("/composite-elevenlabs")
+async def composite_videos_elevenlabs(
+    background_tasks: BackgroundTasks,
+    face: UploadFile = File(...),
+    ref_audio: UploadFile = File(...),
+    contacts: str = Form(...),
+    skip_seconds: float = Form(3.0),
+    scroll_start_seconds: float = Form(0.0),
+):
+    if not ELEVENLABS_API_KEY:
+        return JSONResponse({"error": "ELEVENLABS_API_KEY is not configured"}, status_code=503)
+
+    job_id = str(uuid.uuid4())
+
+    face_ext = os.path.splitext(face.filename or "")[1] or ".webm"
+    face_path = f"temp/{job_id}_face{face_ext}"
+    with open(face_path, "wb") as f:
+        f.write(await face.read())
+
+    ref_ext = os.path.splitext(ref_audio.filename or "")[1] or ".wav"
+    ref_audio_path = f"temp/{job_id}_voice{ref_ext}"
+    with open(ref_audio_path, "wb") as f:
+        f.write(await ref_audio.read())
+
+    contact_list = json.loads(contacts)
+
+    composite_jobs[job_id] = {
+        "status": "processing",
+        "total": len(contact_list),
+        "done": 0,
+        "current": None,
+        "files": [],
+        "engine": "elevenlabs",
+    }
+
+    background_tasks.add_task(
+        run_composite_elevenlabs,
+        job_id,
+        face_path,
+        ref_audio_path,
+        contact_list,
+        skip_seconds,
+        scroll_start_seconds,
+    )
+    return {"jobId": job_id}
+
+
 def _overlay_face_on_scroll(scroll_path: str, face_path: str, output_path: str, scroll_start_seconds: float = 0.0):
     subprocess.run(
         [
@@ -437,6 +680,74 @@ async def run_composite(
 
     composite_jobs[job_id]["status"] = "done"
     composite_jobs[job_id]["current"] = None
+
+
+async def run_composite_elevenlabs(
+    job_id: str,
+    face_path: str,
+    ref_audio_path: str,
+    contacts: list[dict],
+    skip_seconds: float,
+    scroll_start_seconds: float,
+):
+    voice_id: str | None = None
+    try:
+        voice_id = await asyncio.to_thread(
+            _elevenlabs_create_ivc_voice,
+            ref_audio_path,
+            f"sendspark-{job_id}",
+        )
+
+        for contact in contacts:
+            name = contact["name"]
+            scroll_fn = contact["scroll_filename"]
+            composite_jobs[job_id]["current"] = name
+            scroll_path = os.path.join(BACKEND_ROOT, "outputs", scroll_fn)
+
+            if not os.path.exists(scroll_path):
+                composite_jobs[job_id]["files"].append({"name": name, "error": "scroll video not found"})
+                composite_jobs[job_id]["done"] += 1
+                continue
+
+            safe = name.lower().replace(" ", "-")
+            out_fn = f"{job_id}_{safe}_sendspark.mp4"
+            out_path = f"outputs/{out_fn}"
+            hey_path = f"temp/{job_id}_{safe}_hey.mp3"
+
+            try:
+                await asyncio.to_thread(_elevenlabs_tts_to_file, voice_id, f"Hey {name}", hey_path)
+                await asyncio.to_thread(
+                    _composite_with_voice,
+                    scroll_path,
+                    face_path,
+                    hey_path,
+                    skip_seconds,
+                    scroll_start_seconds,
+                    out_path,
+                )
+
+                composite_jobs[job_id]["files"].append({"name": name, "filename": out_fn})
+                try:
+                    object_key = _supabase_object_key(out_fn, "sendspark-elevenlabs")
+                    public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
+                    if public_url:
+                        composite_jobs[job_id]["files"][-1]["public_url"] = public_url
+                except Exception:
+                    composite_jobs[job_id]["files"][-1]["public_url"] = None
+            except Exception as exc:
+                composite_jobs[job_id]["files"].append({"name": name, "error": str(exc)})
+
+            composite_jobs[job_id]["done"] += 1
+    except Exception as exc:
+        composite_jobs[job_id]["files"].append({"name": "job", "error": str(exc)})
+    finally:
+        if voice_id:
+            try:
+                await asyncio.to_thread(_elevenlabs_delete_voice, voice_id)
+            except Exception:
+                pass
+        composite_jobs[job_id]["status"] = "done"
+        composite_jobs[job_id]["current"] = None
 
 
 @app.get("/composite-status/{job_id}")

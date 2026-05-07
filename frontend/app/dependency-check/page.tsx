@@ -12,6 +12,13 @@ type DependencyResponse = {
   storage_write_ok: boolean;
   test_public_url: string | null;
   error: string | null;
+  elevenlabs_configured: boolean;
+  elevenlabs_required_vars_present: Record<string, boolean>;
+  elevenlabs_api_ok: boolean;
+  elevenlabs_model_id: string;
+  elevenlabs_model_available: boolean;
+  elevenlabs_output_format: string;
+  elevenlabs_error: string | null;
 };
 
 export default function DependencyCheckPage() {
@@ -41,7 +48,7 @@ export default function DependencyCheckPage() {
     <main className="min-h-screen px-4 py-10 flex flex-col items-center gap-6 max-w-3xl mx-auto">
       <div className="w-full">
         <h1 className="text-3xl font-bold tracking-tight mb-1">Dependency Check</h1>
-        <p className="text-gray-400 text-sm">Supabase env and storage health from backend.</p>
+        <p className="text-gray-400 text-sm">Supabase and ElevenLabs health from backend.</p>
       </div>
 
       <section className="w-full bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
@@ -112,6 +119,54 @@ export default function DependencyCheckPage() {
           </div>
         )}
       </section>
+
+      {data && !loading && (
+        <section className="w-full bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-4">
+          <h2 className="font-semibold text-lg">ElevenLabs</h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+            <div className="bg-gray-800 rounded-lg p-3">
+              <p className="text-gray-400 text-xs">Configured</p>
+              <p className={data.elevenlabs_configured ? "text-green-400" : "text-red-400"}>
+                {data.elevenlabs_configured ? "Yes" : "No"}
+              </p>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3">
+              <p className="text-gray-400 text-xs">API Auth Check</p>
+              <p className={data.elevenlabs_api_ok ? "text-green-400" : "text-red-400"}>
+                {data.elevenlabs_api_ok ? "OK" : "Failed"}
+              </p>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3">
+              <p className="text-gray-400 text-xs">Model ID</p>
+              <p>{data.elevenlabs_model_id || "-"}</p>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3">
+              <p className="text-gray-400 text-xs">Model Available</p>
+              <p className={data.elevenlabs_model_available ? "text-green-400" : "text-yellow-400"}>
+                {data.elevenlabs_model_available ? "Yes" : "Not Found"}
+              </p>
+            </div>
+            <div className="bg-gray-800 rounded-lg p-3 sm:col-span-2">
+              <p className="text-gray-400 text-xs">Output Format</p>
+              <p>{data.elevenlabs_output_format || "-"}</p>
+            </div>
+          </div>
+
+          <div className="bg-gray-800 rounded-lg p-3 text-sm">
+            <p className="text-gray-400 text-xs mb-2">Required Env Vars</p>
+            <div className="flex flex-col gap-1">
+              {Object.entries(data.elevenlabs_required_vars_present).map(([k, ok]) => (
+                <div key={k} className="flex items-center justify-between">
+                  <span>{k}</span>
+                  <span className={ok ? "text-green-400" : "text-red-400"}>{ok ? "OK" : "Missing"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {data.elevenlabs_error && <p className="text-sm text-red-400">ElevenLabs error: {data.elevenlabs_error}</p>}
+        </section>
+      )}
     </main>
   );
 }
