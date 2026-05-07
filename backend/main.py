@@ -2,6 +2,7 @@ import asyncio
 import json
 import mimetypes
 import os
+import re
 import subprocess
 import uuid
 import zipfile
@@ -18,9 +19,11 @@ from supabase import Client, create_client
 
 app = FastAPI()
 
+# CORS configuration for dev and production
+allowed_origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=allowed_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -84,6 +87,43 @@ def _upload_file_to_supabase(local_path: str, object_key: str) -> str | None:
             file_options={"content-type": content_type, "upsert": "true"},
         )
     return supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(object_key)
+
+
+def _safe_slug(value: str) -> str:
+    normalized = value.strip().lower()
+    normalized = re.sub(r"[^a-z0-9]+", "-", normalized)
+    normalized = normalized.strip("-")
+    return normalized or "lead"
+
+
+def _generate_thumbnail(video_path: str, output_path: str, target_seconds: float | None = None) -> None:
+    if target_seconds is None:
+        duration = _get_duration(video_path)
+        if duration <= 0:
+            target_seconds = 0.5
+        else:
+            target_seconds = min(max(duration * 0.5, 1.0), max(duration - 0.1, 0.5))
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            str(target_seconds),
+            "-i",
+            video_path,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            output_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _preview_object_key(lead_slug: str, preview_id: str, filename: str) -> str:
+    return _supabase_object_key(filename, f"previews/{lead_slug}/{preview_id}")
 
 
 def _elevenlabs_headers() -> dict[str, str]:
@@ -194,6 +234,10 @@ def _elevenlabs_models() -> list[dict]:
 @app.on_event("startup")
 async def load_model():
     global model
+    if not ENABLE_CHATTERBOX:
+        print("Chatterbox disabled via ENABLE_CHATTERBOX env var; skipping model load.")
+        model = None
+        return
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading Chatterbox on {device}…")
     model = await asyncio.to_thread(ChatterboxTTS.from_pretrained, device)
@@ -202,7 +246,11 @@ async def load_model():
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "model_loaded": model is not None}
+    return {
+        "status": "ok",
+        "model_loaded": model is not None,
+        "chatterbox_enabled": ENABLE_CHATTERBOX,
+    }
 
 
 @app.get("/elevenlabs/models")
@@ -327,6 +375,27 @@ def dependency_check():
         "elevenlabs_model_available": elevenlabs_model_available,
         "elevenlabs_output_format": ELEVENLABS_OUTPUT_FORMAT,
         "elevenlabs_error": elevenlabs_error,
+    }
+
+
+@app.get("/preview/metadata/{lead}/{preview_id}")
+def preview_metadata(lead: str, preview_id: str):
+    if not supabase_client or not SUPABASE_STORAGE_BUCKET:
+        return JSONResponse({"error": "Supabase not configured"}, status_code=503)
+
+    lead_slug = _safe_slug(lead)
+    video_key = _preview_object_key(lead_slug, preview_id, "video.mp4")
+    thumbnail_key = _preview_object_key(lead_slug, preview_id, "thumbnail.png")
+
+    display_name = lead_slug.replace("-", " ").title()
+    return {
+        "lead": lead,
+        "preview_id": preview_id,
+        "preview_path": f"/preview/{lead_slug}/{preview_id}",
+        "video_url": supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(video_key),
+        "thumbnail_url": supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(thumbnail_key),
+        "title": f"{display_name} — Personalized Outreach Video",
+        "description": f"Watch a personalized outreach video created for {display_name}.",
     }
 
 
@@ -645,7 +714,7 @@ async def run_composite(
             composite_jobs[job_id]["done"] += 1
             continue
 
-        safe = name.lower().replace(" ", "-")
+        safe = _safe_slug(name)
         out_fn = f"{job_id}_{safe}_sendspark.mp4"
         out_path = f"outputs/{out_fn}"
 
@@ -665,14 +734,28 @@ async def run_composite(
                     _overlay_face_on_scroll, scroll_path, face_path, out_path, scroll_start_seconds
                 )
 
-            composite_jobs[job_id]["files"].append({"name": name, "filename": out_fn})
+            preview_id = f"{job_id}_{safe}"
+            preview_path = f"/preview/{safe}/{preview_id}"
+            composite_jobs[job_id]["files"].append(
+                {"name": name, "filename": out_fn, "preview_id": preview_id, "preview_path": preview_path}
+            )
+
             try:
-                object_key = _supabase_object_key(out_fn, "sendspark")
-                public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
+                preview_video_key = _preview_object_key(safe, preview_id, "video.mp4")
+                public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, preview_video_key)
                 if public_url:
                     composite_jobs[job_id]["files"][-1]["public_url"] = public_url
             except Exception:
                 composite_jobs[job_id]["files"][-1]["public_url"] = None
+
+            try:
+                thumbnail_path = f"outputs/{preview_id}_thumbnail.png"
+                await asyncio.to_thread(_generate_thumbnail, out_path, thumbnail_path)
+                thumbnail_key = _preview_object_key(safe, preview_id, "thumbnail.png")
+                thumbnail_url = await asyncio.to_thread(_upload_file_to_supabase, thumbnail_path, thumbnail_key)
+                composite_jobs[job_id]["files"][-1]["thumbnail_url"] = thumbnail_url
+            except Exception:
+                composite_jobs[job_id]["files"][-1]["thumbnail_url"] = None
         except Exception as e:
             composite_jobs[job_id]["files"].append({"name": name, "error": str(e)})
 
@@ -709,7 +792,7 @@ async def run_composite_elevenlabs(
                 composite_jobs[job_id]["done"] += 1
                 continue
 
-            safe = name.lower().replace(" ", "-")
+            safe = _safe_slug(name)
             out_fn = f"{job_id}_{safe}_sendspark.mp4"
             out_path = f"outputs/{out_fn}"
             hey_path = f"temp/{job_id}_{safe}_hey.mp3"
@@ -726,14 +809,27 @@ async def run_composite_elevenlabs(
                     out_path,
                 )
 
-                composite_jobs[job_id]["files"].append({"name": name, "filename": out_fn})
+                preview_id = f"{job_id}_{safe}"
+                preview_path = f"/preview/{safe}/{preview_id}"
+                composite_jobs[job_id]["files"].append(
+                    {"name": name, "filename": out_fn, "preview_id": preview_id, "preview_path": preview_path}
+                )
                 try:
-                    object_key = _supabase_object_key(out_fn, "sendspark-elevenlabs")
-                    public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
+                    preview_video_key = _preview_object_key(safe, preview_id, "video.mp4")
+                    public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, preview_video_key)
                     if public_url:
                         composite_jobs[job_id]["files"][-1]["public_url"] = public_url
                 except Exception:
                     composite_jobs[job_id]["files"][-1]["public_url"] = None
+
+                try:
+                    thumbnail_path = f"outputs/{preview_id}_thumbnail.png"
+                    await asyncio.to_thread(_generate_thumbnail, out_path, thumbnail_path)
+                    thumbnail_key = _preview_object_key(safe, preview_id, "thumbnail.png")
+                    thumbnail_url = await asyncio.to_thread(_upload_file_to_supabase, thumbnail_path, thumbnail_key)
+                    composite_jobs[job_id]["files"][-1]["thumbnail_url"] = thumbnail_url
+                except Exception:
+                    composite_jobs[job_id]["files"][-1]["thumbnail_url"] = None
             except Exception as exc:
                 composite_jobs[job_id]["files"].append({"name": name, "error": str(exc)})
 

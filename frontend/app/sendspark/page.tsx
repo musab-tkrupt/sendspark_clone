@@ -584,7 +584,7 @@ export default function SendSpark() {
   const stepIdx = steps.findIndex((s) => s.key === step);
 
   return (
-    <main className="min-h-screen px-4 py-10 flex flex-col items-center gap-8 max-w-4xl mx-auto">
+    <main className="min-h-screen px-4 py-10 flex flex-col items-center gap-8 max-w-4xl mx-auto bg-slate-950 text-slate-300">
 
       {/* Header */}
       <div className="w-full">

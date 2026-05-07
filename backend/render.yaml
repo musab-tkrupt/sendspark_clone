@@ -1,0 +1,10 @@
+runtime = "python311"
+
+[env]
+PYTHONUNBUFFERED = "1"
+
+[scripts]
+start = "uvicorn main:app --host 0.0.0.0 --port 8000"
+
+[[triggers]]
+image = "chatterboxtts/latest"
