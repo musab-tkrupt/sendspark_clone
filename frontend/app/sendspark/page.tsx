@@ -1097,6 +1097,32 @@ export default function SendSpark() {
                     </button>
                   </div>
                 )}
+                {entry.preview_path && typeof window !== "undefined" && (
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={`${window.location.origin}${entry.preview_path}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1 text-xs text-purple-400 hover:text-purple-300 hover:border-purple-600 transition truncate"
+                    >
+                      {entry.preview_path}
+                    </a>
+                    <a
+                      href={`${window.location.origin}${entry.preview_path}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="bg-purple-600 hover:bg-purple-500 px-2 py-1 rounded text-xs font-medium transition whitespace-nowrap"
+                    >
+                      Open Preview
+                    </a>
+                    <button
+                      onClick={() => navigator.clipboard.writeText(`${window.location.origin}${entry.preview_path}`)}
+                      className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
+                    >
+                      Copy Link
+                    </button>
+                  </div>
+                )}
                 {entry.filename && (
                   <video
                     src={entry.public_url || `${API}/download/${entry.filename}`}
