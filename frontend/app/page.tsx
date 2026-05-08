@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-const API = "http://localhost:8000";
+import { API_URL as API } from "@/lib/api";
 
 type FileEntry = {
   name: string;

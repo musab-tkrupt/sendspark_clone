@@ -2,8 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-
-const API = "http://localhost:8000";
+import { API_URL as API } from "@/lib/api";
 const FALLBACK_URL = "https://tkrupt.com";
 const SCROLL_BATCH_SIZE = 5;
 

@@ -2,7 +2,7 @@
   "redirects": [
     {
       "source": "/api/:path*",
-      "destination": "https://sendspark-clone.onrender.com/api/:path*",
+      "destination": "  /api/:path*",
       "permanent": false
     }
   ]
