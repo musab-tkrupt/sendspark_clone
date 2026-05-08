@@ -21,6 +21,9 @@ type CompositeFile = {
   name: string;
   filename?: string;
   public_url?: string;
+  preview_path?: string;
+  preview_id?: string;
+  thumbnail_url?: string;
   error?: string;
 };
 type CompositeJob = {
