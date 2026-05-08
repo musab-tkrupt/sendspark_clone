@@ -1,4 +1,4 @@
-can# Python virtual environments
+# Python virtual environments
 env/
 backend/.venv/
 backend/venv/
@@ -18,8 +18,10 @@ frontend/.env.*.local
 **/*.pyd
 
 # Backend runtime artifacts
+backend/.jobs/
 backend/temp/
 backend/outputs/
+backend/node_modules/
 
 # Frontend build/runtime artifacts
 frontend/.next/

@@ -21,6 +21,11 @@ type CompositeFile = {
   name: string;
   filename?: string;
   public_url?: string;
+  preview_url?: string | null;
+  video_public_url?: string | null;
+  thumbnail_public_url?: string | null;
+  preview_id?: string | null;
+  lead_slug?: string | null;
   error?: string;
 };
 type CompositeJob = {
@@ -539,10 +544,17 @@ export default function SendSpark() {
     const escapeCsv = (val: string) => `"${val.replace(/"/g, '""')}"`;
     const header = "Name,Website URL,Video URL";
     const rows = compositeJob.files
-      .filter((entry) => !entry.error && (entry.public_url || entry.filename))
+      .filter(
+        (entry) =>
+          !entry.error && (entry.preview_url || entry.public_url || entry.video_public_url || entry.filename)
+      )
       .map((entry) => {
         const website = contactByName.get(entry.name.trim().toLowerCase()) || "";
-        const videoUrl = entry.public_url || `${API}/download/${entry.filename}`;
+        const videoUrl =
+          entry.preview_url ||
+          entry.public_url ||
+          entry.video_public_url ||
+          `${API}/download/${entry.filename}`;
         return [entry.name, website, videoUrl].map((v) => escapeCsv(v || "")).join(",");
       });
 
@@ -1064,42 +1076,73 @@ export default function SendSpark() {
                     <span className="text-red-400 text-xs">{entry.error}</span>
                   ) : entry.filename ? (
                     <div className="flex items-center gap-3">
-                      <a
-                        href={entry.public_url || `${API}/download/${entry.filename}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-purple-400 hover:text-purple-300 text-xs transition"
-                      >
-                        Open
-                      </a>
-                      <a
-                        href={entry.public_url || `${API}/download/${entry.filename}`}
-                        download
-                        className="text-blue-400 hover:text-blue-300 text-xs transition"
-                      >
-                        Download
-                      </a>
+                      {(() => {
+                        const shareUrl =
+                          entry.preview_url ||
+                          entry.public_url ||
+                          entry.video_public_url ||
+                          `${API}/download/${entry.filename}`;
+                        const mp4Url = entry.video_public_url || `${API}/download/${entry.filename}`;
+                        return (
+                          <>
+                            <a
+                              href={shareUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-purple-400 hover:text-purple-300 text-xs transition"
+                            >
+                              Open
+                            </a>
+                            <a
+                              href={mp4Url}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-indigo-400 hover:text-indigo-300 text-xs transition"
+                            >
+                              Open MP4
+                            </a>
+                            <a
+                              href={mp4Url}
+                              download
+                              className="text-blue-400 hover:text-blue-300 text-xs transition"
+                            >
+                              Download
+                            </a>
+                          </>
+                        );
+                      })()}
                     </div>
                   ) : null}
                 </div>
-                {entry.public_url && (
+                {(entry.preview_url || entry.public_url || entry.video_public_url) && (
                   <div className="flex items-center gap-2">
-                    <input
-                      readOnly
-                      value={entry.public_url}
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
-                    />
-                    <button
-                      onClick={() => navigator.clipboard.writeText(entry.public_url || "")}
-                      className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
-                    >
-                      Copy URL
-                    </button>
+                    {(() => {
+                      const shareUrl =
+                        entry.preview_url ||
+                        entry.public_url ||
+                        entry.video_public_url ||
+                        `${API}/download/${entry.filename}`;
+                      return (
+                        <>
+                          <input
+                            readOnly
+                            value={shareUrl}
+                            className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                          />
+                          <button
+                            onClick={() => navigator.clipboard.writeText(shareUrl)}
+                            className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
+                          >
+                            Copy URL
+                          </button>
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
                 {entry.filename && (
                   <video
-                    src={entry.public_url || `${API}/download/${entry.filename}`}
+                    src={entry.video_public_url || `${API}/download/${entry.filename}`}
                     controls
                     className="w-full rounded-lg border border-gray-700 bg-black max-h-64 object-contain"
                   />

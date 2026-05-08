@@ -1,8 +1,11 @@
 import asyncio
+import html
 import json
 import mimetypes
 import os
+import re
 import subprocess
+import time
 import uuid
 import zipfile
 from io import BytesIO
@@ -60,6 +63,14 @@ SUPABASE_PATH_PREFIX = os.getenv("SUPABASE_PATH_PREFIX", "sendspark").strip().st
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
 ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128").strip()
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://sendspark-clone.vercel.app").strip().rstrip("/")
+SCROLL_STATUS_STALE_SECONDS = int(os.getenv("SCROLL_STATUS_STALE_SECONDS", "90"))
+ENABLE_CHATTERBOX = os.getenv("ENABLE_CHATTERBOX", "false").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 
 supabase_client: Client | None = None
 if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
@@ -76,7 +87,16 @@ def _supabase_object_key(filename: str, category: str) -> str:
 def _upload_file_to_supabase(local_path: str, object_key: str) -> str | None:
     if not supabase_client or not SUPABASE_STORAGE_BUCKET:
         return None
-    content_type = mimetypes.guess_type(local_path)[0] or "application/octet-stream"
+    ext = os.path.splitext(local_path)[1].lower()
+    forced_types = {
+        ".html": "text/html; charset=utf-8",
+        ".htm": "text/html; charset=utf-8",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".png": "image/png",
+        ".mp4": "video/mp4",
+    }
+    content_type = forced_types.get(ext) or mimetypes.guess_type(local_path)[0] or "application/octet-stream"
     with open(local_path, "rb") as f:
         supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).upload(
             path=object_key,
@@ -84,6 +104,186 @@ def _upload_file_to_supabase(local_path: str, object_key: str) -> str | None:
             file_options={"content-type": content_type, "upsert": "true"},
         )
     return supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(object_key)
+
+
+def _supabase_public_url(object_key: str) -> str | None:
+    if not supabase_client or not SUPABASE_STORAGE_BUCKET:
+        return None
+    return supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(object_key)
+
+
+def _slugify(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "lead"
+
+
+def _preview_object_keys(lead_slug: str, preview_id: str) -> dict[str, str]:
+    preview_root = f"previews/{lead_slug}/{preview_id}"
+    return {
+        "video": _supabase_object_key("video.mp4", preview_root),
+        "thumbnail": _supabase_object_key("thumbnail.jpg", preview_root),
+        "html": _supabase_object_key("index.html", preview_root),
+    }
+
+
+def _frontend_preview_url(lead_slug: str, preview_id: str) -> str | None:
+    if not FRONTEND_URL:
+        return None
+    return f"{FRONTEND_URL}/v/{lead_slug}/{preview_id}"
+
+
+def _extract_thumbnail(video_path: str, thumbnail_path: str) -> None:
+    duration = 0.0
+    try:
+        duration = _get_duration(video_path)
+    except Exception:
+        duration = 0.0
+    timestamp = 1.0 if duration <= 0 else max(0.0, min(duration * 0.5, max(duration - 0.1, 0.0)))
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-y",
+            "-ss",
+            f"{timestamp:.3f}",
+            "-i",
+            video_path,
+            "-frames:v",
+            "1",
+            "-q:v",
+            "2",
+            thumbnail_path,
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _build_preview_html(
+    lead_name: str,
+    preview_url: str,
+    video_url: str,
+    thumbnail_url: str,
+) -> str:
+    safe_name = html.escape(lead_name)
+    safe_preview_url = html.escape(preview_url)
+    safe_video_url = html.escape(video_url)
+    safe_thumbnail_url = html.escape(thumbnail_url)
+    title = f"{lead_name} - Personalized Video"
+    description = f"A personalized video message for {lead_name}."
+    safe_title = html.escape(title)
+    safe_description = html.escape(description)
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{safe_title}</title>
+    <meta name="description" content="{safe_description}" />
+    <meta property="og:title" content="{safe_title}" />
+    <meta property="og:description" content="{safe_description}" />
+    <meta property="og:type" content="video.other" />
+    <meta property="og:url" content="{safe_preview_url}" />
+    <meta property="og:image" content="{safe_thumbnail_url}" />
+    <meta property="og:video" content="{safe_video_url}" />
+    <meta property="og:video:type" content="video/mp4" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="{safe_title}" />
+    <meta name="twitter:description" content="{safe_description}" />
+    <meta name="twitter:image" content="{safe_thumbnail_url}" />
+    <style>
+      body {{ margin: 0; font-family: Arial, sans-serif; background: #0b1020; color: #f4f4f5; }}
+      .wrap {{ max-width: 920px; margin: 32px auto; padding: 0 16px; }}
+      h1 {{ font-size: 24px; margin: 0 0 12px; }}
+      p {{ margin: 0 0 18px; color: #d4d4d8; }}
+      video {{ width: 100%; border-radius: 12px; background: #000; }}
+    </style>
+  </head>
+  <body>
+    <div class="wrap">
+      <h1>Video for {safe_name}</h1>
+      <p>Click play to watch your personalized message.</p>
+      <video controls playsinline poster="{safe_thumbnail_url}">
+        <source src="{safe_video_url}" type="video/mp4" />
+      </video>
+    </div>
+  </body>
+</html>
+"""
+
+
+def _upload_lead_preview_assets(local_video_path: str, lead_name: str) -> dict[str, str | None]:
+    lead_slug = _slugify(lead_name)
+    preview_id = str(uuid.uuid4())
+    result: dict[str, str | None] = {
+        "lead_slug": lead_slug,
+        "preview_id": preview_id,
+        "preview_url": None,
+        "vercel_preview_url": _frontend_preview_url(lead_slug, preview_id),
+        "supabase_preview_url": None,
+        "video_public_url": None,
+        "thumbnail_public_url": None,
+    }
+    if not supabase_client or not SUPABASE_STORAGE_BUCKET:
+        return result
+
+    keys = _preview_object_keys(lead_slug, preview_id)
+    video_key = keys["video"]
+    thumb_key = keys["thumbnail"]
+    html_key = keys["html"]
+
+    expected_video_url = _supabase_public_url(video_key) or ""
+    expected_thumb_url = _supabase_public_url(thumb_key) or ""
+    expected_preview_url = _supabase_public_url(html_key) or ""
+
+    temp_thumb_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_thumbnail.jpg")
+    temp_html_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_index.html")
+    try:
+        _extract_thumbnail(local_video_path, temp_thumb_path)
+        preview_html = _build_preview_html(
+            lead_name=lead_name,
+            preview_url=expected_preview_url,
+            video_url=expected_video_url,
+            thumbnail_url=expected_thumb_url,
+        )
+        with open(temp_html_path, "w", encoding="utf-8") as f:
+            f.write(preview_html)
+
+        result["video_public_url"] = _upload_file_to_supabase(local_video_path, video_key)
+        result["thumbnail_public_url"] = _upload_file_to_supabase(temp_thumb_path, thumb_key)
+        html_preview_url = _upload_file_to_supabase(temp_html_path, html_key)
+        result["supabase_preview_url"] = html_preview_url
+        result["preview_url"] = result["vercel_preview_url"] or html_preview_url
+        return result
+    finally:
+        if os.path.exists(temp_thumb_path):
+            os.remove(temp_thumb_path)
+        if os.path.exists(temp_html_path):
+            os.remove(temp_html_path)
+
+
+@app.get("/preview/metadata/{lead_slug}/{preview_id}")
+def preview_metadata(lead_slug: str, preview_id: str):
+    if not supabase_client or not SUPABASE_STORAGE_BUCKET:
+        return JSONResponse({"error": "preview storage is not configured"}, status_code=503)
+    safe_lead = _slugify(lead_slug)
+    safe_preview = str(preview_id).strip()
+    keys = _preview_object_keys(safe_lead, safe_preview)
+    video_url = _supabase_public_url(keys["video"])
+    thumbnail_url = _supabase_public_url(keys["thumbnail"])
+    if not video_url or not thumbnail_url:
+        return JSONResponse({"error": "preview assets not found"}, status_code=404)
+    display_name = safe_lead.replace("-", " ").title()
+    title = f"{display_name} - Personalized Video"
+    description = f"A personalized video message for {display_name}."
+    return {
+        "lead_slug": safe_lead,
+        "preview_id": safe_preview,
+        "title": title,
+        "description": description,
+        "video_url": video_url,
+        "thumbnail_url": thumbnail_url,
+        "canonical_url": _frontend_preview_url(safe_lead, safe_preview) or _supabase_public_url(keys["html"]),
+    }
 
 
 def _elevenlabs_headers() -> dict[str, str]:
@@ -194,10 +394,17 @@ def _elevenlabs_models() -> list[dict]:
 @app.on_event("startup")
 async def load_model():
     global model
+    if not ENABLE_CHATTERBOX:
+        print("Chatterbox disabled (ENABLE_CHATTERBOX=false). Skipping model load.")
+        return
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading Chatterbox on {device}…")
-    model = await asyncio.to_thread(ChatterboxTTS.from_pretrained, device)
-    print("Model ready.")
+    try:
+        model = await asyncio.to_thread(ChatterboxTTS.from_pretrained, device)
+        print("Model ready.")
+    except Exception as exc:
+        model = None
+        print(f"Chatterbox failed to load; continuing without it: {exc}")
 
 
 @app.get("/health")
@@ -446,12 +653,16 @@ async def generate_scroll(url: str = Form(...)):
     with open(os.path.join(jobs_dir, f"{job_id}.json"), "w") as f:
         json.dump({"status": "recording"}, f)
 
+    # Keep a per-job recorder log so failed Puppeteer runs are debuggable.
+    log_path = os.path.join(jobs_dir, f"{job_id}.log")
+    log_file = open(log_path, "ab")
     subprocess.Popen(
         ["node", "scripts/record-paged.js", url, job_id],
         cwd=BACKEND_ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
     )
+    log_file.close()
     return {"jobId": job_id}
 
 
@@ -461,7 +672,22 @@ def scroll_status(job_id: str):
     if not os.path.exists(job_file):
         return JSONResponse({"status": "not_found"}, status_code=404)
     with open(job_file) as f:
-        return json.load(f)
+        data = json.load(f)
+
+    if data.get("status") == "recording":
+        last_write = os.path.getmtime(job_file)
+        stale_for = time.time() - last_write
+        if stale_for > SCROLL_STATUS_STALE_SECONDS:
+            data = {
+                "status": "error",
+                "error": (
+                    "Scroll recorder timed out. Check .jobs/"
+                    f"{job_id}.log for details."
+                ),
+            }
+            with open(job_file, "w") as f:
+                json.dump(data, f)
+    return data
 
 
 @app.get("/scroll-video/{filename}")
@@ -665,14 +891,34 @@ async def run_composite(
                     _overlay_face_on_scroll, scroll_path, face_path, out_path, scroll_start_seconds
                 )
 
-            composite_jobs[job_id]["files"].append({"name": name, "filename": out_fn})
+            entry: dict = {"name": name, "filename": out_fn}
+            composite_jobs[job_id]["files"].append(entry)
             try:
-                object_key = _supabase_object_key(out_fn, "sendspark")
-                public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
-                if public_url:
-                    composite_jobs[job_id]["files"][-1]["public_url"] = public_url
+                preview_data = await asyncio.to_thread(_upload_lead_preview_assets, out_path, name)
+                composite_jobs[job_id]["files"][-1].update(preview_data)
             except Exception:
-                composite_jobs[job_id]["files"][-1]["public_url"] = None
+                composite_jobs[job_id]["files"][-1].update(
+                    {
+                        "lead_slug": _slugify(name),
+                        "preview_id": str(uuid.uuid4()),
+                        "preview_url": None,
+                        "vercel_preview_url": None,
+                        "supabase_preview_url": None,
+                        "video_public_url": None,
+                        "thumbnail_public_url": None,
+                    }
+                )
+            if not composite_jobs[job_id]["files"][-1].get("video_public_url"):
+                try:
+                    object_key = _supabase_object_key(out_fn, "sendspark")
+                    public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
+                    composite_jobs[job_id]["files"][-1]["video_public_url"] = public_url
+                except Exception:
+                    composite_jobs[job_id]["files"][-1]["video_public_url"] = None
+            composite_jobs[job_id]["files"][-1]["public_url"] = (
+                composite_jobs[job_id]["files"][-1].get("preview_url")
+                or composite_jobs[job_id]["files"][-1].get("video_public_url")
+            )
         except Exception as e:
             composite_jobs[job_id]["files"].append({"name": name, "error": str(e)})
 
@@ -726,14 +972,34 @@ async def run_composite_elevenlabs(
                     out_path,
                 )
 
-                composite_jobs[job_id]["files"].append({"name": name, "filename": out_fn})
+                entry: dict = {"name": name, "filename": out_fn}
+                composite_jobs[job_id]["files"].append(entry)
                 try:
-                    object_key = _supabase_object_key(out_fn, "sendspark-elevenlabs")
-                    public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
-                    if public_url:
-                        composite_jobs[job_id]["files"][-1]["public_url"] = public_url
+                    preview_data = await asyncio.to_thread(_upload_lead_preview_assets, out_path, name)
+                    composite_jobs[job_id]["files"][-1].update(preview_data)
                 except Exception:
-                    composite_jobs[job_id]["files"][-1]["public_url"] = None
+                    composite_jobs[job_id]["files"][-1].update(
+                        {
+                            "lead_slug": _slugify(name),
+                            "preview_id": str(uuid.uuid4()),
+                            "preview_url": None,
+                            "vercel_preview_url": None,
+                            "supabase_preview_url": None,
+                            "video_public_url": None,
+                            "thumbnail_public_url": None,
+                        }
+                    )
+                if not composite_jobs[job_id]["files"][-1].get("video_public_url"):
+                    try:
+                        object_key = _supabase_object_key(out_fn, "sendspark-elevenlabs")
+                        public_url = await asyncio.to_thread(_upload_file_to_supabase, out_path, object_key)
+                        composite_jobs[job_id]["files"][-1]["video_public_url"] = public_url
+                    except Exception:
+                        composite_jobs[job_id]["files"][-1]["video_public_url"] = None
+                composite_jobs[job_id]["files"][-1]["public_url"] = (
+                    composite_jobs[job_id]["files"][-1].get("preview_url")
+                    or composite_jobs[job_id]["files"][-1].get("video_public_url")
+                )
             except Exception as exc:
                 composite_jobs[job_id]["files"].append({"name": name, "error": str(exc)})
 
