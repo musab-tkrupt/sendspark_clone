@@ -526,13 +526,30 @@ async def generate_scroll(url: str = Form(...)):
     with open(job_file, "w", encoding="utf-8") as f:
         json.dump({"status": "queued", "created_at": time.time()}, f)
 
+    log_file = os.path.join(BACKEND_ROOT, ".jobs", f"{job_id}.log")
     try:
-        subprocess.Popen(
-            ["node", "scripts/record-paged.js", url, job_id],
-            cwd=BACKEND_ROOT,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        with open(log_file, "wb") as lf:
+            proc = subprocess.Popen(
+                ["node", "scripts/record-paged.js", url, job_id],
+                cwd=BACKEND_ROOT,
+                stdout=lf,
+                stderr=lf,
+            )
+        # Give the process 3 seconds to crash at startup (module load errors etc.)
+        await asyncio.sleep(3)
+        if proc.poll() is not None and proc.returncode != 0:
+            # Process already died — read the log and mark job as error
+            try:
+                with open(log_file, "r", encoding="utf-8", errors="replace") as lf:
+                    stderr_text = lf.read()[-2000:]
+            except Exception:
+                stderr_text = "unknown error"
+            # Only overwrite if still queued (node script may have updated it)
+            with open(job_file, "r", encoding="utf-8") as f:
+                current = json.load(f)
+            if current.get("status") == "queued":
+                with open(job_file, "w", encoding="utf-8") as f:
+                    json.dump({"status": "error", "error": f"node crashed: {stderr_text}", "created_at": time.time()}, f)
     except Exception as exc:
         error_data = {"status": "error", "error": str(exc), "created_at": time.time()}
         with open(job_file, "w", encoding="utf-8") as f:

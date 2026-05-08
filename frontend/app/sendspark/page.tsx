@@ -15,6 +15,7 @@ type Contact = {
   scrollStatus: ScrollStatus;
   scrollFilename?: string;
   isFallback?: boolean;
+  scrollRetries?: number; // auto-retry count before falling back
 };
 type CompositeFile = {
   name: string;
@@ -312,7 +313,31 @@ export default function SendSpark() {
               updates[c.id] = { scrollStatus: "error" };
             }
           } else if (data.status === "error" || data.status === "not_found") {
-            if (!c.isFallback) {
+            const retries = c.scrollRetries ?? 0;
+            const originalUrl = c.isFallback ? null : c.website.replace(/ \(↓ fallback\)$/, "");
+
+            if (!c.isFallback && retries < 2) {
+              // Retry the original URL up to 2 times before falling back
+              try {
+                const r = await fetch(`${API}/scroll`, {
+                  method: "POST",
+                  body: new URLSearchParams({ url: originalUrl! }),
+                });
+                if (r.ok) {
+                  const { jobId } = await r.json();
+                  updates[c.id] = {
+                    scrollJobId: jobId,
+                    scrollStatus: "queued",
+                    scrollRetries: retries + 1,
+                  };
+                } else {
+                  updates[c.id] = { scrollStatus: "error" };
+                }
+              } catch {
+                updates[c.id] = { scrollStatus: "error" };
+              }
+            } else if (!c.isFallback) {
+              // Retries exhausted — fall back to tkrupt.com
               try {
                 const r2 = await fetch(`${API}/scroll`, {
                   method: "POST",
@@ -322,7 +347,7 @@ export default function SendSpark() {
                   const { jobId } = await r2.json();
                   updates[c.id] = {
                     scrollJobId: jobId,
-                    scrollStatus: "generating",
+                    scrollStatus: "queued",
                     isFallback: true,
                     website: c.website + " (↓ fallback)",
                   };
@@ -333,6 +358,7 @@ export default function SendSpark() {
                 updates[c.id] = { scrollStatus: "error" };
               }
             } else {
+              // Fallback itself failed — give up
               updates[c.id] = { scrollStatus: "error" };
             }
           }
@@ -548,13 +574,14 @@ export default function SendSpark() {
     );
 
     const escapeCsv = (val: string) => `"${val.replace(/"/g, '""')}"`;
-    const header = "Name,Website URL,Video URL";
+    const header = "Name,Website URL,Share Preview Link,Video URL";
     const rows = compositeJob.files
       .filter((entry) => !entry.error && (entry.public_url || entry.filename))
       .map((entry) => {
         const website = contactByName.get(entry.name.trim().toLowerCase()) || "";
         const videoUrl = entry.public_url || `${API}/download/${entry.filename}`;
-        return [entry.name, website, videoUrl].map((v) => escapeCsv(v || "")).join(",");
+        const previewLink = entry.preview_path ? `${window.location.origin}${entry.preview_path}` : "";
+        return [entry.name, website, previewLink, videoUrl].map((v) => escapeCsv(v || "")).join(",");
       });
 
     const csv = [header, ...rows].join("\n");
@@ -750,13 +777,13 @@ export default function SendSpark() {
                     {c.scrollStatus === "queued" && (
                       <span className="text-xs text-gray-400 flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-gray-400" />
-                        Queued…
+                        {(c.scrollRetries ?? 0) > 0 ? `Retry ${c.scrollRetries}/2…` : "Queued…"}
                       </span>
                     )}
                     {c.scrollStatus === "generating" && (
                       <span className="text-xs text-yellow-400 flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
-                        {c.isFallback ? "Fallback…" : "Generating…"}
+                        {c.isFallback ? "Fallback…" : (c.scrollRetries ?? 0) > 0 ? `Retry ${c.scrollRetries}/2…` : "Generating…"}
                       </span>
                     )}
                     {c.scrollStatus === "done" && <span className="text-xs text-green-400">✓ Done</span>}
@@ -1068,78 +1095,70 @@ export default function SendSpark() {
 
           <div className="flex flex-col gap-4">
             {(compositeJob?.files || []).map((entry) => (
-              <div key={entry.name} className="bg-gray-900 border border-gray-800 rounded-xl p-4 flex flex-col gap-3">
-                <div className="flex items-center justify-between">
+              <div key={entry.name} className="bg-gray-900 border border-gray-800 rounded-xl overflow-hidden">
+                {/* Card header */}
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
                   <span className="font-medium">{entry.name}</span>
                   {entry.error ? (
                     <span className="text-red-400 text-xs">{entry.error}</span>
                   ) : entry.filename ? (
-                    <div className="flex items-center gap-3">
-                      <a
-                        href={entry.public_url || `${API}/download/${entry.filename}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-purple-400 hover:text-purple-300 text-xs transition"
-                      >
-                        Open
-                      </a>
-                      <a
-                        href={entry.public_url || `${API}/download/${entry.filename}`}
-                        download
-                        className="text-blue-400 hover:text-blue-300 text-xs transition"
-                      >
-                        Download
-                      </a>
-                    </div>
+                    <a
+                      href={entry.public_url || `${API}/download/${entry.filename}`}
+                      download
+                      className="text-blue-400 hover:text-blue-300 text-xs transition"
+                    >
+                      ↓ Download
+                    </a>
                   ) : null}
                 </div>
-                {entry.public_url && (
-                  <div className="flex items-center gap-2">
-                    <input
-                      readOnly
-                      value={entry.public_url}
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
-                    />
-                    <button
-                      onClick={() => navigator.clipboard.writeText(entry.public_url || "")}
-                      className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
-                    >
-                      Copy URL
-                    </button>
+
+                {!entry.error && (
+                  <div className="p-4 flex flex-col gap-3">
+                    {/* PRIMARY: share preview link */}
+                    {entry.preview_path && typeof window !== "undefined" && (
+                      <div className="bg-purple-950/40 border border-purple-700/50 rounded-lg p-3 flex flex-col gap-2">
+                        <p className="text-xs text-purple-300 font-semibold">
+                          Share link — shows rich preview on WhatsApp, Slack, LinkedIn
+                        </p>
+                        <div className="flex items-center gap-2">
+                          <input
+                            readOnly
+                            value={`${window.location.origin}${entry.preview_path}`}
+                            className="flex-1 bg-gray-950 border border-purple-800/60 rounded px-2 py-1.5 text-xs text-gray-200 min-w-0"
+                          />
+                          <button
+                            onClick={() => navigator.clipboard.writeText(`${window.location.origin}${entry.preview_path}`)}
+                            className="bg-purple-600 hover:bg-purple-500 px-3 py-1.5 rounded text-xs font-semibold transition whitespace-nowrap"
+                          >
+                            Copy
+                          </button>
+                          <a
+                            href={`${window.location.origin}${entry.preview_path}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="bg-gray-700 hover:bg-gray-600 px-3 py-1.5 rounded text-xs transition whitespace-nowrap"
+                          >
+                            Open
+                          </a>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Thumbnail (preferred) or video player */}
+                    {entry.thumbnail_url ? (
+                      <img
+                        src={entry.thumbnail_url}
+                        alt={`${entry.name} thumbnail`}
+                        className="w-full rounded-lg border border-gray-700 max-h-52 object-cover"
+                      />
+                    ) : entry.filename ? (
+                      <video
+                        src={entry.public_url || `${API}/download/${entry.filename}`}
+                        controls
+                        className="w-full rounded-lg border border-gray-700 bg-black max-h-52 object-contain"
+                      />
+                    ) : null}
                   </div>
-                )}
-                {entry.preview_path && typeof window !== "undefined" && (
-                  <div className="flex items-center gap-2">
-                    <a
-                      href={`${window.location.origin}${entry.preview_path}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="flex-1 bg-gray-800 border border-gray-700 rounded px-3 py-1 text-xs text-purple-400 hover:text-purple-300 hover:border-purple-600 transition truncate"
-                    >
-                      {entry.preview_path}
-                    </a>
-                    <a
-                      href={`${window.location.origin}${entry.preview_path}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="bg-purple-600 hover:bg-purple-500 px-2 py-1 rounded text-xs font-medium transition whitespace-nowrap"
-                    >
-                      Open Preview
-                    </a>
-                    <button
-                      onClick={() => navigator.clipboard.writeText(`${window.location.origin}${entry.preview_path}`)}
-                      className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
-                    >
-                      Copy Link
-                    </button>
-                  </div>
-                )}
-                {entry.filename && (
-                  <video
-                    src={entry.public_url || `${API}/download/${entry.filename}`}
-                    controls
-                    className="w-full rounded-lg border border-gray-700 bg-black max-h-64 object-contain"
-                  />
                 )}
               </div>
             ))}

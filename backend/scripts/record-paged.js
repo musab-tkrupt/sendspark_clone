@@ -1,7 +1,20 @@
-const puppeteer = require('puppeteer')
-const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder')
 const fs = require('fs')
 const path = require('path')
+
+let puppeteer, PuppeteerScreenRecorder
+try {
+  puppeteer = require('puppeteer')
+  PuppeteerScreenRecorder = require('puppeteer-screen-recorder').PuppeteerScreenRecorder
+} catch (err) {
+  const jobId = process.argv[3]
+  if (jobId) {
+    const dir = path.join(process.cwd(), '.jobs')
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(path.join(dir, `${jobId}.json`), JSON.stringify({ status: 'error', error: `Module load failed: ${err.message}` }))
+  }
+  console.error('Module load failed:', err.message)
+  process.exit(1)
+}
 const { execFileSync } = require('child_process')
 
 const VIEWPORT_WIDTH = 1600
@@ -55,7 +68,13 @@ async function recordPagedVideo(url) {
 
   const browser = await puppeteer.launch({
     headless: 'new',
-    args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    executablePath: process.env.CHROMIUM_PATH || undefined,
+    args: [
+      '--no-sandbox',
+      '--disable-setuid-sandbox',
+      '--disable-dev-shm-usage',  // prevents crash in Docker (tiny /dev/shm)
+      '--disable-gpu',
+    ],
   })
 
   const page = await browser.newPage()
