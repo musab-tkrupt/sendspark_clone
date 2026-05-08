@@ -4,6 +4,7 @@ import mimetypes
 import os
 import re
 import subprocess
+import time
 import uuid
 import zipfile
 from io import BytesIO
@@ -60,6 +61,7 @@ SUPABASE_PATH_PREFIX = os.getenv("SUPABASE_PATH_PREFIX", "sendspark").strip().st
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
 ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128").strip()
+SCROLL_STATUS_STALE_SECONDS = max(60, int(os.getenv("SCROLL_STATUS_STALE_SECONDS", "180")))
 ENABLE_CHATTERBOX = os.getenv("ENABLE_CHATTERBOX", "false").strip().lower() not in ("0", "false", "no", "off")
 
 supabase_client: Client | None = None
@@ -474,6 +476,7 @@ async def run_generation(
             safe = name.lower().replace(" ", "-")
             wav_filename = f"{job_id}_{safe}.wav"
             wav_path = f"outputs/{wav_filename}"
+            import torchaudio
             await asyncio.to_thread(torchaudio.save, wav_path, wav, sr)
 
             concat_filename = f"{job_id}_{safe}_full.wav"
@@ -519,15 +522,23 @@ async def generate_scroll(url: str = Form(...)):
     job_id = str(uuid.uuid4())
     jobs_dir = os.path.join(BACKEND_ROOT, ".jobs")
     os.makedirs(jobs_dir, exist_ok=True)
-    with open(os.path.join(jobs_dir, f"{job_id}.json"), "w") as f:
-        json.dump({"status": "recording"}, f)
+    job_file = os.path.join(jobs_dir, f"{job_id}.json")
+    with open(job_file, "w", encoding="utf-8") as f:
+        json.dump({"status": "queued", "created_at": time.time()}, f)
 
-    subprocess.Popen(
-        ["node", "scripts/record-paged.js", url, job_id],
-        cwd=BACKEND_ROOT,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+    try:
+        subprocess.Popen(
+            ["node", "scripts/record-paged.js", url, job_id],
+            cwd=BACKEND_ROOT,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        error_data = {"status": "error", "error": str(exc), "created_at": time.time()}
+        with open(job_file, "w", encoding="utf-8") as f:
+            json.dump(error_data, f)
+        return JSONResponse({"error": "Failed to launch scroll job"}, status_code=500)
+
     return {"jobId": job_id}
 
 
@@ -536,8 +547,24 @@ def scroll_status(job_id: str):
     job_file = os.path.join(BACKEND_ROOT, ".jobs", f"{job_id}.json")
     if not os.path.exists(job_file):
         return JSONResponse({"status": "not_found"}, status_code=404)
-    with open(job_file) as f:
-        return json.load(f)
+    with open(job_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    status = data.get("status")
+    if status in {"recording", "queued"}:
+        try:
+            age_seconds = int(time.time() - os.path.getmtime(job_file))
+            if age_seconds > SCROLL_STATUS_STALE_SECONDS:
+                data = {
+                    "status": "error",
+                    "error": f"stale scroll job exceeded {SCROLL_STATUS_STALE_SECONDS}s",
+                }
+                with open(job_file, "w", encoding="utf-8") as wf:
+                    json.dump(data, wf)
+        except Exception:
+            pass
+
+    return data
 
 
 @app.get("/scroll-video/{filename}")

@@ -296,15 +296,22 @@ export default function SendSpark() {
       await Promise.all(
         pending.map(async (c) => {
           const res = await fetch(`${API}/scroll-status/${c.scrollJobId}`);
-          if (!res.ok) return;
+          if (!res.ok) {
+            updates[c.id] = { scrollStatus: "error" };
+            return;
+          }
           const data = await res.json();
           if (data.status === "queued") {
             updates[c.id] = { scrollStatus: "queued" };
           } else if (data.status === "recording") {
             updates[c.id] = { scrollStatus: "generating" };
           } else if (data.status === "done") {
-            updates[c.id] = { scrollStatus: "done", scrollFilename: data.filename };
-          } else if (data.status === "error") {
+            if (data.filename) {
+              updates[c.id] = { scrollStatus: "done", scrollFilename: data.filename };
+            } else {
+              updates[c.id] = { scrollStatus: "error" };
+            }
+          } else if (data.status === "error" || data.status === "not_found") {
             if (!c.isFallback) {
               try {
                 const r2 = await fetch(`${API}/scroll`, {
@@ -319,6 +326,8 @@ export default function SendSpark() {
                     isFallback: true,
                     website: c.website + " (↓ fallback)",
                   };
+                } else {
+                  updates[c.id] = { scrollStatus: "error" };
                 }
               } catch {
                 updates[c.id] = { scrollStatus: "error" };

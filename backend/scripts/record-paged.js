@@ -49,6 +49,7 @@ async function recordPagedVideo(url) {
   const filename = `${baseFilename}${uniqueSuffix}`
   const outputPath = `./outputs/${filename}-paged.mp4`
 
+  updateJob({ status: 'recording', started_at: Date.now() })
   console.log(`Recording (paged): ${url}`)
   console.log(`Output: ${outputPath}`)
 
