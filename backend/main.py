@@ -9,9 +9,6 @@ import zipfile
 from io import BytesIO
 
 import httpx
-import torch
-import torchaudio
-from chatterbox.tts import ChatterboxTTS
 from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -28,7 +25,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-model: ChatterboxTTS | None = None
+model = None
 jobs: dict = {}
 composite_jobs: dict = {}
 
@@ -63,6 +60,7 @@ SUPABASE_PATH_PREFIX = os.getenv("SUPABASE_PATH_PREFIX", "sendspark").strip().st
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
 ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128").strip()
+ENABLE_CHATTERBOX = os.getenv("ENABLE_CHATTERBOX", "false").strip().lower() not in ("0", "false", "no", "off")
 
 supabase_client: Client | None = None
 if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
@@ -238,6 +236,15 @@ async def load_model():
         print("Chatterbox disabled via ENABLE_CHATTERBOX env var; skipping model load.")
         model = None
         return
+
+    try:
+        import torch
+        from chatterbox.tts import ChatterboxTTS
+    except ImportError as exc:
+        print(f"Chatterbox dependencies not installed: {exc}")
+        model = None
+        return
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Loading Chatterbox on {device}…")
     model = await asyncio.to_thread(ChatterboxTTS.from_pretrained, device)
@@ -410,7 +417,7 @@ async def generate(
     skip_seconds: float = Form(3.0),
 ):
     if model is None:
-        return JSONResponse({"error": "Model not loaded yet"}, status_code=503)
+        return JSONResponse({"error": "Chatterbox model is disabled or not loaded"}, status_code=503)
 
     job_id = str(uuid.uuid4())
 
@@ -721,6 +728,7 @@ async def run_composite(
         try:
             if ref_audio_path and model:
                 # Clone voice → "Hey [Name]" then composite everything
+                import torchaudio
                 wav, sr = await asyncio.to_thread(_generate_one, f"Hey {name}", ref_audio_path)
                 hey_path = f"temp/{job_id}_{safe}_hey.wav"
                 await asyncio.to_thread(torchaudio.save, hey_path, wav, sr)

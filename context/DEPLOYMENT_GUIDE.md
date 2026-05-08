@@ -63,7 +63,7 @@ Click **"Deploy"** — Vercel will build and go live.
 - **Name**: `voice-backend` (or your choice)
 - **Root Directory**: `voice/backend`
 - **Build Command**: `pip install -r requirements.txt`
-- **Start Command**: `uvicorn main:app --host 0.0.0.0 --port 8000`
+- **Start Command**: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 - **Plan**: Choose Free or Paid (Free tier sleeps after 15 min inactivity)
 
 ### 4. Set environment variables in Render
@@ -77,7 +77,7 @@ Click **"Deploy"** — Vercel will build and go live.
   ELEVENLABS_API_KEY=your_key
   ELEVENLABS_MODEL_ID=eleven_multilingual_v2
   ELEVENLABS_OUTPUT_FORMAT=mp3_44100_128
-  ENABLE_CHATTERBOX=true
+  ENABLE_CHATTERBOX=false  # Set false when using ElevenLabs only to reduce memory and skip chatterbox
   ```
 
 ### 5. Deploy
