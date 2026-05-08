@@ -236,7 +236,7 @@ export default function SendSpark() {
           let url = c.website.trim();
           if (!url.startsWith("http")) url = "https://" + url;
           try {
-            const res = await fetch(`${API}/scroll`, {
+            const res = await fetch(`/api/scroll`, {
               method: "POST",
               body: new URLSearchParams({ url }),
             });
@@ -296,7 +296,7 @@ export default function SendSpark() {
       const updates: Record<string, Partial<Contact>> = {};
       await Promise.all(
         pending.map(async (c) => {
-          const res = await fetch(`${API}/scroll-status/${c.scrollJobId}`);
+          const res = await fetch(`/api/scroll-status/${c.scrollJobId}`);
           if (!res.ok) {
             updates[c.id] = { scrollStatus: "error" };
             return;
@@ -319,7 +319,7 @@ export default function SendSpark() {
             if (!c.isFallback && retries < 2) {
               // Retry the original URL up to 2 times before falling back
               try {
-                const r = await fetch(`${API}/scroll`, {
+                const r = await fetch(`/api/scroll`, {
                   method: "POST",
                   body: new URLSearchParams({ url: originalUrl! }),
                 });
@@ -339,7 +339,7 @@ export default function SendSpark() {
             } else if (!c.isFallback) {
               // Retries exhausted — fall back to tkrupt.com
               try {
-                const r2 = await fetch(`${API}/scroll`, {
+                const r2 = await fetch(`/api/scroll`, {
                   method: "POST",
                   body: new URLSearchParams({ url: FALLBACK_URL }),
                 });
@@ -553,7 +553,13 @@ export default function SendSpark() {
     const contactsWithScroll = contacts.filter((c) => c.scrollFilename);
     form.append(
       "contacts",
-      JSON.stringify(contactsWithScroll.map((c) => ({ name: c.name, scroll_filename: c.scrollFilename })))
+      JSON.stringify(
+        contactsWithScroll.map((c) => ({
+          name: c.name,
+          // pass full URL so the backend can download the video directly
+          scroll_url: `${window.location.origin}/api/scroll-video/${c.scrollFilename}`,
+        }))
+      )
     );
 
     try {
@@ -791,7 +797,7 @@ export default function SendSpark() {
                   </div>
                   {c.scrollStatus === "done" && c.scrollFilename && (
                     <video
-                      src={`${API}/scroll-video/${c.scrollFilename}`}
+                      src={`/api/scroll-video/${c.scrollFilename}`}
                       className="w-64 h-36 rounded object-cover border border-gray-700 bg-black"
                       controls
                       preload="metadata"

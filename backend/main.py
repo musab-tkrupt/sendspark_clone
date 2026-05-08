@@ -755,13 +755,34 @@ async def run_composite(
 ):
     for contact in contacts:
         name = contact["name"]
-        scroll_fn = contact["scroll_filename"]
         composite_jobs[job_id]["current"] = name
 
-        scroll_path = os.path.join(BACKEND_ROOT, "outputs", scroll_fn)
+        # Accept either a remote URL (scroll_url) or a local filename (scroll_filename)
+        scroll_url = contact.get("scroll_url")
+        scroll_fn = contact.get("scroll_filename")
+        scroll_path: str | None = None
 
-        if not os.path.exists(scroll_path):
-            composite_jobs[job_id]["files"].append({"name": name, "error": "scroll video not found"})
+        if scroll_url:
+            temp_scroll = os.path.join(BACKEND_ROOT, "temp", f"{job_id}_{_safe_slug(name)}_scroll.mp4")
+            try:
+                async with httpx.AsyncClient(timeout=60) as client:
+                    r = await client.get(scroll_url)
+                    r.raise_for_status()
+                    with open(temp_scroll, "wb") as f:
+                        f.write(r.content)
+                scroll_path = temp_scroll
+            except Exception as exc:
+                composite_jobs[job_id]["files"].append({"name": name, "error": f"failed to download scroll video: {exc}"})
+                composite_jobs[job_id]["done"] += 1
+                continue
+        elif scroll_fn:
+            scroll_path = os.path.join(BACKEND_ROOT, "outputs", scroll_fn)
+            if not os.path.exists(scroll_path):
+                composite_jobs[job_id]["files"].append({"name": name, "error": "scroll video not found"})
+                composite_jobs[job_id]["done"] += 1
+                continue
+        else:
+            composite_jobs[job_id]["files"].append({"name": name, "error": "no scroll video provided"})
             composite_jobs[job_id]["done"] += 1
             continue
 
@@ -835,12 +856,33 @@ async def run_composite_elevenlabs(
 
         for contact in contacts:
             name = contact["name"]
-            scroll_fn = contact["scroll_filename"]
             composite_jobs[job_id]["current"] = name
-            scroll_path = os.path.join(BACKEND_ROOT, "outputs", scroll_fn)
 
-            if not os.path.exists(scroll_path):
-                composite_jobs[job_id]["files"].append({"name": name, "error": "scroll video not found"})
+            scroll_url = contact.get("scroll_url")
+            scroll_fn = contact.get("scroll_filename")
+            scroll_path: str | None = None
+
+            if scroll_url:
+                temp_scroll = os.path.join(BACKEND_ROOT, "temp", f"{job_id}_{_safe_slug(name)}_scroll.mp4")
+                try:
+                    async with httpx.AsyncClient(timeout=60) as client:
+                        r = await client.get(scroll_url)
+                        r.raise_for_status()
+                        with open(temp_scroll, "wb") as f:
+                            f.write(r.content)
+                    scroll_path = temp_scroll
+                except Exception as exc:
+                    composite_jobs[job_id]["files"].append({"name": name, "error": f"failed to download scroll video: {exc}"})
+                    composite_jobs[job_id]["done"] += 1
+                    continue
+            elif scroll_fn:
+                scroll_path = os.path.join(BACKEND_ROOT, "outputs", scroll_fn)
+                if not os.path.exists(scroll_path):
+                    composite_jobs[job_id]["files"].append({"name": name, "error": "scroll video not found"})
+                    composite_jobs[job_id]["done"] += 1
+                    continue
+            else:
+                composite_jobs[job_id]["files"].append({"name": name, "error": "no scroll video provided"})
                 composite_jobs[job_id]["done"] += 1
                 continue
 

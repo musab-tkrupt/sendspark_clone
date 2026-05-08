@@ -12,7 +12,9 @@
   "dependencies": {
     "next": "^16.2.5",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "puppeteer": "^19.0.0",
+    "puppeteer-screen-recorder": "^3.0.6"
   },
   "devDependencies": {
     "@types/node": "^20",
