@@ -4,7 +4,8 @@
       "Bash(pip show *)",
       "Bash(python -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\(d.get\\('scripts',{}\\)\\)\")",
       "Bash(ffmpeg -version)",
-      "Bash(ffprobe -version)"
+      "Bash(ffprobe -version)",
+      "Bash(curl -s \"https://sendspark-clone.vercel.app/v/uzair/07f66a53-9c5e-494f-b3ec-64331957fcb8\")"
     ]
   }
 }

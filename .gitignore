@@ -27,6 +27,11 @@ backend/node_modules/
 frontend/.next/
 frontend/out/
 frontend/node_modules/
+frontend/.jobs/
+frontend/outputs/
+
+# Claude local settings
+.claude/settings.local.json
 
 # Misc
 .DS_Store
