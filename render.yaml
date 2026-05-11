@@ -1,0 +1,10 @@
+# Render Blueprint.
+# Root Directory in the dashboard must be set to `backend`.
+# Build Command must be exactly: bash build.sh
+services:
+  - type: web
+    name: sendspark-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: bash build.sh
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT

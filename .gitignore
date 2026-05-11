@@ -23,6 +23,7 @@ backend/.jobs/
 backend/temp/
 backend/outputs/
 backend/node_modules/
+backend/.puppeteer_cache/
 
 # Frontend build/runtime artifacts
 frontend/.next/

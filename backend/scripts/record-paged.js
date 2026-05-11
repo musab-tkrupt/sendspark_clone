@@ -1,5 +1,3 @@
-const puppeteer = require('puppeteer')
-const { PuppeteerScreenRecorder } = require('puppeteer-screen-recorder')
 const fs = require('fs')
 const path = require('path')
 
@@ -55,6 +53,19 @@ function sleep(ms) {
 }
 
 async function recordPagedVideo(url) {
+  log('node: loading puppeteer + puppeteer-screen-recorder')
+  let puppeteer
+  let PuppeteerScreenRecorder
+  try {
+    puppeteer = require('puppeteer')
+    ;({ PuppeteerScreenRecorder } = require('puppeteer-screen-recorder'))
+  } catch (e) {
+    log(
+      `error missing Node deps (${e.message}). On the server run: cd backend && npm ci`
+    )
+    throw e
+  }
+
   log(`start url=${url}`)
   fs.mkdirSync('./outputs', { recursive: true })
   await updateDbJob({ status: 'recording', error: null, filename: null })

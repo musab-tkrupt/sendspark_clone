@@ -45,9 +45,12 @@ jobs: dict = {}
 composite_jobs: dict = {}
 
 BACKEND_ROOT = os.path.abspath(os.path.dirname(__file__))
+PUPPETEER_CACHE_DIR = os.path.join(BACKEND_ROOT, ".puppeteer_cache")
 
 os.makedirs("temp", exist_ok=True)
 os.makedirs("outputs", exist_ok=True)
+print(f"[startup] BACKEND_ROOT={BACKEND_ROOT}")
+print(f"[startup] PUPPETEER_CACHE_DIR={PUPPETEER_CACHE_DIR} (exists={os.path.isdir(PUPPETEER_CACHE_DIR)})")
 
 
 def _load_local_env() -> None:
@@ -758,6 +761,9 @@ async def generate_scroll(url: str = Form(...)):
     log_path = os.path.join(jobs_dir, f"{job_id}.log")
     child_env = os.environ.copy()
     child_env["SCROLL_JOB_LOG"] = log_path
+    # Always point at app dir (not ~/.cache). Do not use setdefault — a wrong
+    # PUPPETEER_CACHE_DIR from the Render dashboard would otherwise win.
+    child_env["PUPPETEER_CACHE_DIR"] = PUPPETEER_CACHE_DIR
     subprocess.Popen(
         ["node", "scripts/record-paged.js", normalized_url, job_id],
         cwd=BACKEND_ROOT,
