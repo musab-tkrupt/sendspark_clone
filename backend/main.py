@@ -10,11 +10,9 @@ import uuid
 import zipfile
 from datetime import datetime, timezone
 from io import BytesIO
+from typing import Any
 
 import httpx
-import torch
-import torchaudio
-from chatterbox.tts import ChatterboxTTS
 from fastapi import BackgroundTasks, FastAPI, File, Form, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -32,7 +30,7 @@ def _parse_cors_origins(raw: str) -> list[str]:
     origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
     return origins or DEFAULT_CORS_ORIGINS
 
-model: ChatterboxTTS | None = None
+model: Any | None = None
 jobs: dict = {}
 composite_jobs: dict = {}
 
@@ -85,6 +83,16 @@ ENABLE_CHATTERBOX = os.getenv("ENABLE_CHATTERBOX", "false").strip().lower() in {
     "yes",
     "on",
 }
+
+
+def _save_audio(path: str, wav, sr: int) -> None:
+    try:
+        import torchaudio
+    except Exception as exc:
+        raise RuntimeError(
+            "torchaudio is not installed. Install torch/torchaudio to use local Chatterbox generation."
+        ) from exc
+    torchaudio.save(path, wav, sr)
 
 supabase_client: Client | None = None
 if SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY:
@@ -466,9 +474,12 @@ async def load_model():
     if not ENABLE_CHATTERBOX:
         print("Chatterbox disabled (ENABLE_CHATTERBOX=false). Skipping model load.")
         return
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Loading Chatterbox on {device}…")
     try:
+        import torch
+        from chatterbox.tts import ChatterboxTTS
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        print(f"Loading Chatterbox on {device}…")
         model = await asyncio.to_thread(ChatterboxTTS.from_pretrained, device)
         print("Model ready.")
     except Exception as exc:
@@ -674,7 +685,7 @@ async def run_generation(
             safe = name.lower().replace(" ", "-")
             wav_filename = f"{job_id}_{safe}.wav"
             wav_path = f"outputs/{wav_filename}"
-            await asyncio.to_thread(torchaudio.save, wav_path, wav, sr)
+            await asyncio.to_thread(_save_audio, wav_path, wav, sr)
 
             concat_filename = f"{job_id}_{safe}_full.wav"
             concat_path = f"outputs/{concat_filename}"
@@ -984,7 +995,7 @@ async def run_composite(
                 # Clone voice → "Hey [Name]" then composite everything
                 wav, sr = await asyncio.to_thread(_generate_one, f"Hey {name}", ref_audio_path)
                 hey_path = f"temp/{job_id}_{safe}_hey.wav"
-                await asyncio.to_thread(torchaudio.save, hey_path, wav, sr)
+                await asyncio.to_thread(_save_audio, hey_path, wav, sr)
                 await asyncio.to_thread(
                     _composite_with_voice,
                     scroll_path, face_path, hey_path, skip_seconds, scroll_start_seconds, out_path,
