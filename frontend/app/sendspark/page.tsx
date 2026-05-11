@@ -1,9 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+import { useApiBase } from "../components/ApiBaseProvider";
 const FALLBACK_URL = "https://tkrupt.com";
 const SCROLL_BATCH_SIZE = 5;
 
@@ -69,11 +68,16 @@ function parseCsvRow(line: string): string[] {
 }
 
 export default function SendSpark() {
+  const { apiBase, ready: apiReady } = useApiBase();
   const router = useRouter();
   const pathname = usePathname();
   const isElevenLabsMode = pathname === "/sendspark-elevenlabs";
   const currentBaseRoute = isElevenLabsMode ? "/sendspark-elevenlabs" : "/sendspark";
-  const compositeStartEndpoint = isElevenLabsMode ? `${API}/composite-elevenlabs` : `${API}/composite`;
+  const compositeStartEndpoint = useMemo(
+    () =>
+      isElevenLabsMode ? `${apiBase}/composite-elevenlabs` : `${apiBase}/composite`,
+    [isElevenLabsMode, apiBase]
+  );
   // ── State ─────────────────────────────────────────────────────────────────
   const [step, setStep] = useState<Step>("contacts");
   const [contacts, setContacts] = useState<Contact[]>([
@@ -230,7 +234,7 @@ export default function SendSpark() {
 
   // ── Step 2: scroll generation ─────────────────────────────────────────────
   async function launchScrollBatch(batch: Contact[]) {
-    if (scrollBatchLaunchingRef.current || !batch.length) return;
+    if (!apiReady || scrollBatchLaunchingRef.current || !batch.length) return;
     scrollBatchLaunchingRef.current = true;
     try {
       const updated = await Promise.all(
@@ -238,7 +242,7 @@ export default function SendSpark() {
           let url = c.website.trim();
           if (!url.startsWith("http")) url = "https://" + url;
           try {
-            const res = await fetch(`${API}/scroll`, {
+            const res = await fetch(`${apiBase}/scroll`, {
               method: "POST",
               body: new URLSearchParams({ url }),
             });
@@ -262,6 +266,7 @@ export default function SendSpark() {
   }
 
   async function startScrollGeneration() {
+    if (!apiReady) return;
     goToStep("scroll");
     const resetContacts = contacts.map((c) =>
       c.name.trim() && c.website.trim()
@@ -282,7 +287,7 @@ export default function SendSpark() {
 
   // Poll scroll jobs
   useEffect(() => {
-    if (step !== "scroll") return;
+    if (step !== "scroll" || !apiReady) return;
     const interval = setInterval(async () => {
       const pending = contactsRef.current.filter(
         (c) => (c.scrollStatus === "queued" || c.scrollStatus === "generating") && c.scrollJobId
@@ -298,7 +303,7 @@ export default function SendSpark() {
       const updates: Record<string, Partial<Contact>> = {};
       await Promise.all(
         pending.map(async (c) => {
-          const res = await fetch(`${API}/scroll-status/${c.scrollJobId}`);
+          const res = await fetch(`${apiBase}/scroll-status/${c.scrollJobId}`);
           if (!res.ok) return;
           const data = await res.json();
           if (data.status === "queued") {
@@ -310,7 +315,7 @@ export default function SendSpark() {
           } else if (data.status === "error") {
             if (!c.isFallback) {
               try {
-                const r2 = await fetch(`${API}/scroll`, {
+                const r2 = await fetch(`${apiBase}/scroll`, {
                   method: "POST",
                   body: new URLSearchParams({ url: FALLBACK_URL }),
                 });
@@ -338,7 +343,7 @@ export default function SendSpark() {
       }
     }, 2000);
     return () => clearInterval(interval);
-  }, [step]);
+  }, [step, apiReady, apiBase]);
 
   const allScrollDone = contacts.every(
     (c) => !c.name.trim() || c.scrollStatus === "done" || c.scrollStatus === "error"
@@ -554,7 +559,7 @@ export default function SendSpark() {
           entry.preview_url ||
           entry.public_url ||
           entry.video_public_url ||
-          `${API}/download/${entry.filename}`;
+          `${apiBase}/download/${entry.filename}`;
         return [entry.name, website, videoUrl].map((v) => escapeCsv(v || "")).join(",");
       });
 
@@ -572,17 +577,17 @@ export default function SendSpark() {
 
   // Poll composite
   useEffect(() => {
-    if (!compositeJobId || compositeJob?.status === "done") {
+    if (!apiReady || !compositeJobId || compositeJob?.status === "done") {
       if (compositeJob?.status === "done") setIsProcessing(false);
       return;
     }
     const interval = setInterval(async () => {
-      const res = await fetch(`${API}/composite-status/${compositeJobId}`);
+      const res = await fetch(`${apiBase}/composite-status/${compositeJobId}`);
       if (!res.ok) return;
       setCompositeJob(await res.json());
     }, 1500);
     return () => clearInterval(interval);
-  }, [compositeJobId, compositeJob?.status]);
+  }, [compositeJobId, compositeJob?.status, apiReady, apiBase]);
 
   const fmt = (s: number) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
@@ -723,10 +728,10 @@ export default function SendSpark() {
 
           <button
             onClick={startScrollGeneration}
-            disabled={validContacts.length === 0}
+            disabled={validContacts.length === 0 || !apiReady}
             className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed py-3.5 rounded-xl font-semibold transition"
           >
-            Generate Scroll Videos → ({validContacts.length} contacts)
+            {!apiReady ? "Loading API configuration…" : `Generate Scroll Videos → (${validContacts.length} contacts)`}
           </button>
         </div>
       )}
@@ -765,7 +770,7 @@ export default function SendSpark() {
                   </div>
                   {c.scrollStatus === "done" && c.scrollFilename && (
                     <video
-                      src={`${API}/scroll-video/${c.scrollFilename}`}
+                      src={`${apiBase}/scroll-video/${c.scrollFilename}`}
                       className="w-64 h-36 rounded object-cover border border-gray-700 bg-black"
                       controls
                       preload="metadata"
@@ -1040,7 +1045,7 @@ export default function SendSpark() {
                   Download CSV
                 </button>
                 <a
-                  href={`${API}/composite-download-all/${compositeJobId}`}
+                  href={`${apiBase}/composite-download-all/${compositeJobId}`}
                   className="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg text-sm transition"
                 >
                   Download All (ZIP)
@@ -1081,8 +1086,8 @@ export default function SendSpark() {
                           entry.preview_url ||
                           entry.public_url ||
                           entry.video_public_url ||
-                          `${API}/download/${entry.filename}`;
-                        const mp4Url = entry.video_public_url || `${API}/download/${entry.filename}`;
+                          `${apiBase}/download/${entry.filename}`;
+                        const mp4Url = entry.video_public_url || `${apiBase}/download/${entry.filename}`;
                         return (
                           <>
                             <a
@@ -1121,7 +1126,7 @@ export default function SendSpark() {
                         entry.preview_url ||
                         entry.public_url ||
                         entry.video_public_url ||
-                        `${API}/download/${entry.filename}`;
+                        `${apiBase}/download/${entry.filename}`;
                       return (
                         <>
                           <input
@@ -1142,7 +1147,7 @@ export default function SendSpark() {
                 )}
                 {entry.filename && (
                   <video
-                    src={entry.video_public_url || `${API}/download/${entry.filename}`}
+                    src={entry.video_public_url || `${apiBase}/download/${entry.filename}`}
                     controls
                     className="w-full rounded-lg border border-gray-700 bg-black max-h-64 object-contain"
                   />

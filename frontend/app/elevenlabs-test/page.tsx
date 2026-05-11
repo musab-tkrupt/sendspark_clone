@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from "react";
-
-const API = "http://localhost:8000";
+import { useApiBase } from "../components/ApiBaseProvider";
 
 export default function ElevenLabsTestPage() {
+  const { apiBase, ready: apiReady } = useApiBase();
   const [voiceId, setVoiceId] = useState("");
   const [ttsText, setTtsText] = useState("Hello from ElevenLabs test endpoint.");
   const [sampleFile, setSampleFile] = useState<File | null>(null);
@@ -14,10 +14,11 @@ export default function ElevenLabsTestPage() {
   const [loadingKey, setLoadingKey] = useState<string | null>(null);
 
   async function testModels() {
+    if (!apiReady) return;
     setLoadingKey("models");
     setModelsResult("");
     try {
-      const res = await fetch(`${API}/elevenlabs/models`);
+      const res = await fetch(`${apiBase}/elevenlabs/models`);
       const data = await res.json();
       setModelsResult(JSON.stringify(data, null, 2));
     } catch (e: unknown) {
@@ -28,13 +29,14 @@ export default function ElevenLabsTestPage() {
   }
 
   async function testTts() {
+    if (!apiReady) return;
     setLoadingKey("tts");
     setTtsResult("");
     try {
       const form = new FormData();
       form.append("voice_id", voiceId);
       form.append("text", ttsText);
-      const res = await fetch(`${API}/elevenlabs/test-tts`, { method: "POST", body: form });
+      const res = await fetch(`${apiBase}/elevenlabs/test-tts`, { method: "POST", body: form });
       const data = await res.json();
       setTtsResult(JSON.stringify(data, null, 2));
     } catch (e: unknown) {
@@ -45,7 +47,7 @@ export default function ElevenLabsTestPage() {
   }
 
   async function testClone() {
-    if (!sampleFile) return;
+    if (!apiReady || !sampleFile) return;
     setLoadingKey("clone");
     setCloneResult("");
     try {
@@ -53,7 +55,7 @@ export default function ElevenLabsTestPage() {
       form.append("sample_audio", sampleFile);
       form.append("name", `cursor-test-${Date.now()}`);
       form.append("delete_after_test", "true");
-      const res = await fetch(`${API}/elevenlabs/test-clone`, { method: "POST", body: form });
+      const res = await fetch(`${apiBase}/elevenlabs/test-clone`, { method: "POST", body: form });
       const data = await res.json();
       setCloneResult(JSON.stringify(data, null, 2));
     } catch (e: unknown) {
@@ -68,13 +70,14 @@ export default function ElevenLabsTestPage() {
       <div className="w-full">
         <h1 className="text-3xl font-bold tracking-tight mb-1">ElevenLabs API Test</h1>
         <p className="text-gray-400 text-sm">Simple test page for models, test TTS, and instant clone.</p>
+        {!apiReady && <p className="text-amber-400 text-sm">Loading API base…</p>}
       </div>
 
       <section className="w-full bg-gray-900 border border-gray-800 rounded-2xl p-6 flex flex-col gap-3">
         <h2 className="text-lg font-semibold">1) Models API</h2>
         <button
           onClick={testModels}
-          disabled={loadingKey !== null}
+          disabled={!apiReady || loadingKey !== null}
           className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 px-4 py-2 rounded-lg text-sm w-fit"
         >
           {loadingKey === "models" ? "Checking..." : "Fetch Models"}
@@ -100,7 +103,7 @@ export default function ElevenLabsTestPage() {
         />
         <button
           onClick={testTts}
-          disabled={!voiceId.trim() || loadingKey !== null}
+          disabled={!apiReady || !voiceId.trim() || loadingKey !== null}
           className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 px-4 py-2 rounded-lg text-sm w-fit"
         >
           {loadingKey === "tts" ? "Generating..." : "Run TTS Test"}
@@ -120,7 +123,7 @@ export default function ElevenLabsTestPage() {
         />
         <button
           onClick={testClone}
-          disabled={!sampleFile || loadingKey !== null}
+          disabled={!apiReady || !sampleFile || loadingKey !== null}
           className="bg-purple-600 hover:bg-purple-500 disabled:opacity-40 px-4 py-2 rounded-lg text-sm w-fit"
         >
           {loadingKey === "clone" ? "Testing..." : "Run Clone Test"}

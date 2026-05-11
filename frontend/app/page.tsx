@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-const API = "http://localhost:8000";
+import { useApiBase } from "./components/ApiBaseProvider";
 
 type FileEntry = {
   name: string;
@@ -22,6 +21,7 @@ type Job = {
 };
 
 export default function VoiceCloner() {
+  const { apiBase, ready: apiReady } = useApiBase();
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
@@ -99,7 +99,7 @@ export default function VoiceCloner() {
   }
 
   async function handleGenerate() {
-    if (!audioFile || !names.trim()) return;
+    if (!apiReady || !audioFile || !names.trim()) return;
     setError(null);
     setIsGenerating(true);
     setJob(null);
@@ -112,7 +112,7 @@ export default function VoiceCloner() {
     form.append("skip_seconds", String(skipSeconds));
 
     try {
-      const res = await fetch(`${API}/generate`, { method: "POST", body: form });
+      const res = await fetch(`${apiBase}/generate`, { method: "POST", body: form });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error ?? "Failed to start generation");
@@ -126,14 +126,14 @@ export default function VoiceCloner() {
   }
 
   useEffect(() => {
-    if (!jobId || job?.status === "done") {
+    if (!apiReady || !jobId || job?.status === "done") {
       if (pollRef.current) clearInterval(pollRef.current);
       if (job?.status === "done") setIsGenerating(false);
       return;
     }
 
     pollRef.current = setInterval(async () => {
-      const res = await fetch(`${API}/status/${jobId}`);
+      const res = await fetch(`${apiBase}/status/${jobId}`);
       if (!res.ok) return;
       const data: Job = await res.json();
       setJob(data);
@@ -142,7 +142,7 @@ export default function VoiceCloner() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [jobId, job?.status]);
+  }, [jobId, job?.status, apiReady, apiBase]);
 
   const nameCount = names
     .split(/[,\n]/)
@@ -285,14 +285,16 @@ export default function VoiceCloner() {
         {error && <p className="text-red-400 text-sm">Error: {error}</p>}
         <button
           onClick={handleGenerate}
-          disabled={isGenerating || !audioFile || nameCount === 0}
+          disabled={isGenerating || !apiReady || !audioFile || nameCount === 0}
           className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed py-3.5 rounded-xl font-semibold text-base transition"
         >
-          {isGenerating
-            ? job
-              ? `Generating… ${job.done}/${job.total}`
-              : "Starting…"
-            : `Generate ${nameCount > 0 ? nameCount : ""} Clip${nameCount !== 1 ? "s" : ""}${videoFile ? " + Video" : ""}`}
+          {!apiReady
+            ? "Loading API configuration…"
+            : isGenerating
+              ? job
+                ? `Generating… ${job.done}/${job.total}`
+                : "Starting…"
+              : `Generate ${nameCount > 0 ? nameCount : ""} Clip${nameCount !== 1 ? "s" : ""}${videoFile ? " + Video" : ""}`}
         </button>
 
         {job && job.status === "processing" && (
@@ -321,7 +323,7 @@ export default function VoiceCloner() {
             </h2>
             {job.status === "done" && (
               <a
-                href={`${API}/download-all/${jobId}`}
+                href={`${apiBase}/download-all/${jobId}`}
                 className="text-sm bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded-lg transition"
               >
                 Download All (ZIP)
@@ -342,18 +344,18 @@ export default function VoiceCloner() {
                   ) : (
                     <div className="flex gap-3 text-xs">
                       {entry.filename && (
-                        <a href={`${API}/download/${entry.filename}`} download className="text-purple-400 hover:text-purple-300 transition">
+                        <a href={`${apiBase}/download/${entry.filename}`} download className="text-purple-400 hover:text-purple-300 transition">
                           Hey only
                         </a>
                       )}
                       {entry.concat_filename && (
-                        <a href={`${API}/download/${entry.concat_filename}`} download className="text-blue-400 hover:text-blue-300 transition">
+                        <a href={`${apiBase}/download/${entry.concat_filename}`} download className="text-blue-400 hover:text-blue-300 transition">
                           Full audio
                         </a>
                       )}
                       {entry.video_filename && (
                         <a
-                          href={entry.video_public_url || `${API}/download/${entry.video_filename}`}
+                          href={entry.video_public_url || `${apiBase}/download/${entry.video_filename}`}
                           download
                           className="text-green-400 hover:text-green-300 transition"
                         >
@@ -366,7 +368,7 @@ export default function VoiceCloner() {
 
                 {entry.video_filename ? (
                   <video
-                    src={entry.video_public_url || `${API}/download/${entry.video_filename}`}
+                    src={entry.video_public_url || `${apiBase}/download/${entry.video_filename}`}
                     controls
                     className="w-full rounded-lg border border-gray-700 bg-black max-h-56 object-contain"
                   />
@@ -376,7 +378,7 @@ export default function VoiceCloner() {
                   <div className="flex flex-col gap-1">
                     <p className="text-xs text-gray-500">Full clip — Hey {entry.name} + your original audio</p>
                     <audio
-                      src={`${API}/download/${entry.concat_filename}`}
+                      src={`${apiBase}/download/${entry.concat_filename}`}
                       controls
                       className="w-full h-9 accent-blue-500"
                     />

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import { getServerApiBase } from "@/lib/server-api-base";
 
 type PreviewMetadata = {
   lead_slug: string;
@@ -13,10 +14,9 @@ type PreviewMetadata = {
   image_height?: number;
 };
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-
 async function getPreviewMetadata(lead: string, id: string): Promise<PreviewMetadata | null> {
-  const res = await fetch(`${API}/preview/metadata/${encodeURIComponent(lead)}/${encodeURIComponent(id)}`, {
+  const api = getServerApiBase();
+  const res = await fetch(`${api}/preview/metadata/${encodeURIComponent(lead)}/${encodeURIComponent(id)}`, {
     cache: "no-store",
   });
   if (!res.ok) return null;
