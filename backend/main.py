@@ -743,26 +743,87 @@ def get_status(job_id: str):
 
 # ── Scroll video generation (reuses SS_Clone_2.0 scripts) ────────────────────
 
+def _scroll_filename_from_url(url: str) -> str:
+    """Mirror of record-paged.js: derive output filename from URL."""
+    slug = re.sub(r"https?://", "", url)
+    slug = re.sub(r"[^a-z0-9]", "-", slug, flags=re.IGNORECASE).lower()
+    return f"{slug}-paged.mp4"
+
+
+def _find_cached_scroll_filename(url: str) -> str | None:
+    """Return filename if a completed scroll recording exists for this URL in Supabase DB."""
+    if not supabase_client:
+        return None
+    try:
+        result = (
+            supabase_client.table("scroll_jobs")
+            .select("filename")
+            .eq("url", url)
+            .eq("status", "done")
+            .order("completed_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        for row in result.data or []:
+            if row.get("filename"):
+                return row["filename"]
+    except Exception:
+        pass
+    return None
+
+
+def _download_scroll_video_from_supabase(filename: str, local_path: str) -> bool:
+    """Download a scroll video from Supabase Storage to local disk. Returns True on success."""
+    if not supabase_client or not SUPABASE_STORAGE_BUCKET:
+        return False
+    key = _supabase_object_key(filename, "scroll")
+    try:
+        data = supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).download(key)
+        with open(local_path, "wb") as f:
+            f.write(data)
+        return True
+    except Exception:
+        return False
+
+
 @app.post("/scroll")
 async def generate_scroll(url: str = Form(...)):
-    job_id = str(uuid.uuid4())
     normalized_url = url.strip()
+    job_id = str(uuid.uuid4())
     jobs_dir = os.path.join(BACKEND_ROOT, ".jobs")
     os.makedirs(jobs_dir, exist_ok=True)
+
+    # Check cache: if we've recorded this URL before and the video is in Supabase Storage,
+    # skip the recorder entirely and return done immediately.
+    cached_fn = _find_cached_scroll_filename(normalized_url)
+    if cached_fn:
+        local_path = os.path.join(BACKEND_ROOT, "outputs", cached_fn)
+        if not os.path.exists(local_path):
+            downloaded = _download_scroll_video_from_supabase(cached_fn, local_path)
+        else:
+            downloaded = True
+        if downloaded:
+            print(f"[scroll] cache hit for {normalized_url} → {cached_fn}")
+            with open(os.path.join(jobs_dir, f"{job_id}.json"), "w") as f:
+                json.dump({"status": "done", "filename": cached_fn}, f)
+            try:
+                _scroll_job_create(job_id, normalized_url)
+                _scroll_job_status_update(job_id, "done", filename=cached_fn)
+            except Exception:
+                pass
+            return {"jobId": job_id, "cached": True}
+
+    # No usable cache — spawn the recorder.
     with open(os.path.join(jobs_dir, f"{job_id}.json"), "w") as f:
         json.dump({"status": "recording"}, f)
     try:
         _scroll_job_create(job_id, normalized_url)
     except Exception:
-        # Keep local fallback behavior if durable storage is unavailable.
         pass
 
-    # Per-job file log path (Node also echoes milestones to stdout → visible in Render logs on free tier).
     log_path = os.path.join(jobs_dir, f"{job_id}.log")
     child_env = os.environ.copy()
     child_env["SCROLL_JOB_LOG"] = log_path
-    # Always point at app dir (not ~/.cache). Do not use setdefault — a wrong
-    # PUPPETEER_CACHE_DIR from the Render dashboard would otherwise win.
     child_env["PUPPETEER_CACHE_DIR"] = PUPPETEER_CACHE_DIR
     subprocess.Popen(
         ["node", "scripts/record-paged.js", normalized_url, job_id],
@@ -857,11 +918,18 @@ def scroll_status(job_id: str):
 
 @app.get("/scroll-video/{filename}")
 def scroll_video(filename: str):
+    from fastapi.responses import RedirectResponse
     filename = os.path.basename(filename)
-    path = os.path.join(BACKEND_ROOT, "outputs", filename)
-    if not os.path.exists(path):
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="video/mp4")
+    local_path = os.path.join(BACKEND_ROOT, "outputs", filename)
+    if os.path.exists(local_path):
+        return FileResponse(local_path, media_type="video/mp4")
+    # File not on local disk (e.g. after a redeploy) — redirect to Supabase Storage.
+    if supabase_client and SUPABASE_STORAGE_BUCKET:
+        key = _supabase_object_key(filename, "scroll")
+        public_url = supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(key)
+        if public_url:
+            return RedirectResponse(url=public_url, status_code=302)
+    return JSONResponse({"error": "not found"}, status_code=404)
 
 
 # ── SendSpark composite pipeline ──────────────────────────────────────────────

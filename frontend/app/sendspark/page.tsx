@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { useApiBase } from "../components/ApiBaseProvider";
-const FALLBACK_URL = "https://tkrupt.com";
+const FALLBACK_URL = "https://example.com";
 const SCROLL_BATCH_SIZE = 5;
 
 type ScrollStatus = "idle" | "queued" | "generating" | "done" | "error";
