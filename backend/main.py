@@ -26,8 +26,18 @@ DEFAULT_CORS_ORIGINS = [
 ]
 
 
+def _normalize_cors_origin(origin: str) -> str:
+    """Browser Origin header never includes a trailing slash; env vars often do."""
+    o = origin.strip()
+    while o.endswith("/"):
+        o = o[:-1]
+    return o
+
+
 def _parse_cors_origins(raw: str) -> list[str]:
-    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    origins = [
+        _normalize_cors_origin(o) for o in raw.split(",") if o.strip()
+    ]
     return origins or DEFAULT_CORS_ORIGINS
 
 model: Any | None = None
@@ -58,8 +68,11 @@ def _load_local_env() -> None:
 
 _load_local_env()
 
+# Render / docs sometimes use ALLOWED_ORIGINS — accept both names.
 CORS_ALLOW_ORIGINS = _parse_cors_origins(
-    os.getenv("CORS_ALLOW_ORIGINS", ",".join(DEFAULT_CORS_ORIGINS))
+    os.getenv("CORS_ALLOW_ORIGINS")
+    or os.getenv("ALLOWED_ORIGINS")
+    or ",".join(DEFAULT_CORS_ORIGINS)
 )
 app.add_middleware(
     CORSMiddleware,
@@ -137,11 +150,13 @@ def _supabase_public_url(object_key: str) -> str | None:
 def _scroll_job_create(job_id: str, url: str) -> None:
     if not supabase_client:
         return
+    # Match backend/.jobs/{id}.json ("recording") as soon as Popen is queued — avoids UI stuck on
+    # "queued" when the Node recorder cannot PATCH Supabase (missing env / REST errors).
     supabase_client.table("scroll_jobs").upsert(
         {
             "id": job_id,
             "url": url,
-            "status": "queued",
+            "status": "recording",
             "attempts": 1,
             "started_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -739,17 +754,26 @@ async def generate_scroll(url: str = Form(...)):
         # Keep local fallback behavior if durable storage is unavailable.
         pass
 
-    # Keep a per-job recorder log so failed Puppeteer runs are debuggable.
+    # Per-job file log path (Node also echoes milestones to stdout → visible in Render logs on free tier).
     log_path = os.path.join(jobs_dir, f"{job_id}.log")
-    log_file = open(log_path, "ab")
+    child_env = os.environ.copy()
+    child_env["SCROLL_JOB_LOG"] = log_path
     subprocess.Popen(
         ["node", "scripts/record-paged.js", normalized_url, job_id],
         cwd=BACKEND_ROOT,
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
+        env=child_env,
+        stdout=None,
+        stderr=None,
     )
-    log_file.close()
     return {"jobId": job_id}
+
+
+def _read_local_scroll_job(job_id: str) -> dict | None:
+    job_file = os.path.join(BACKEND_ROOT, ".jobs", f"{job_id}.json")
+    if not os.path.exists(job_file):
+        return None
+    with open(job_file, encoding="utf-8") as f:
+        return json.load(f)
 
 
 @app.get("/scroll-status/{job_id}")
@@ -760,8 +784,28 @@ def scroll_status(job_id: str):
     except Exception:
         db_job = None
 
+    local_job = _read_local_scroll_job(job_id)
+
     if db_job:
         status = db_job.get("status")
+        # If DB never advanced past "queued" but disk already has progress (recorder couldn't PATCH DB).
+        if status == "queued" and local_job:
+            ls = local_job.get("status")
+            if ls in ("recording", "done", "error"):
+                status = ls
+                db_job = {**db_job, "status": status}
+                if local_job.get("filename"):
+                    db_job["filename"] = local_job.get("filename")
+                if local_job.get("error"):
+                    db_job["error"] = local_job.get("error")
+        # Disk finished but Supabase PATCH for "done" failed (recorder still updates .jobs).
+        elif status == "recording" and local_job and local_job.get("status") == "done":
+            status = "done"
+            db_job = {**db_job, "status": "done", "filename": local_job.get("filename")}
+        elif status == "recording" and local_job and local_job.get("status") == "error":
+            status = "error"
+            db_job = {**db_job, "status": "error", "error": local_job.get("error")}
+
         if status == "recording":
             updated_at = _parse_iso_datetime(db_job.get("updated_at"))
             if updated_at:

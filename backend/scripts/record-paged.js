@@ -6,9 +6,26 @@ const path = require('path')
 const jobId = process.argv[3]
 const supabaseUrl = (process.env.SUPABASE_URL || '').trim()
 const supabaseServiceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim()
+const scrollLogPath = (process.env.SCROLL_JOB_LOG || '').trim()
+
+function log(msg) {
+  const shortId = jobId ? String(jobId).slice(0, 8) : 'no-id'
+  const line = `[${new Date().toISOString()}] [scroll:${shortId}] ${msg}`
+  console.log(line)
+  if (scrollLogPath) {
+    try {
+      fs.appendFileSync(scrollLogPath, `${line}\n`)
+    } catch (_) {
+      /* ignore disk errors */
+    }
+  }
+}
 
 async function updateDbJob(patch) {
-  if (!jobId || !supabaseUrl || !supabaseServiceRoleKey) return
+  if (!jobId || !supabaseUrl || !supabaseServiceRoleKey) {
+    log('supabase: PATCH skipped (recorder missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY)')
+    return
+  }
   const baseUrl = supabaseUrl.replace(/\/+$/, '')
   const res = await fetch(`${baseUrl}/rest/v1/scroll_jobs?id=eq.${encodeURIComponent(jobId)}`, {
     method: 'PATCH',
@@ -38,6 +55,7 @@ function sleep(ms) {
 }
 
 async function recordPagedVideo(url) {
+  log(`start url=${url}`)
   fs.mkdirSync('./outputs', { recursive: true })
   await updateDbJob({ status: 'recording', error: null, filename: null })
 
@@ -47,15 +65,17 @@ async function recordPagedVideo(url) {
     .toLowerCase()
   const outputPath = `./outputs/${filename}-paged.mp4`
 
-  console.log(`Recording (paged): ${url}`)
-  console.log(`Output: ${outputPath}`)
+  log(`output file ${outputPath}`)
 
+  log('chromium: launching puppeteer')
   const browser = await puppeteer.launch({
     headless: 'new',
     args: ['--no-sandbox', '--disable-setuid-sandbox'],
   })
+  log('chromium: browser launched')
 
   const page = await browser.newPage()
+  log('chromium: new page + viewport 1280x720')
   await page.setViewport({ width: 1280, height: 720 })
 
   const recorder = new PuppeteerScreenRecorder(page, {
@@ -66,12 +86,15 @@ async function recordPagedVideo(url) {
     videoPreset: 'ultrafast',
   })
 
+  log('recorder: starting screen capture')
   await recorder.start(outputPath)
+  log('recorder: capture started')
 
-  console.log('Loading page...')
+  log(`page: goto ${url} (networkidle0, 30s)`)
   await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 })
+  log('page: load complete')
 
-  console.log('Scrolling page by page (smooth)...')
+  log('scroll: smooth page-by-page in page context')
   await page.evaluate(
     async () => {
       const viewportHeight = window.innerHeight
@@ -88,14 +111,18 @@ async function recordPagedVideo(url) {
       }
     }
   )
+  log('scroll: finished')
 
   await sleep(1000)
 
-  console.log('Stopping recording...')
+  log('recorder: stopping')
   await recorder.stop()
+  log('chromium: closing browser')
   await browser.close()
+  log('chromium: closed')
 
-  console.log(`✅ Done! Video saved to ${outputPath}`)
+  log(`done video saved ${outputPath}`)
+  log('supabase: updating job status → done')
   await updateDbJob({
     status: 'done',
     filename: `${filename}-paged.mp4`,
@@ -114,6 +141,7 @@ if (!url) {
 }
 
 recordPagedVideo(url).catch((err) => {
+  log(`error ${err.message}`)
   console.error('Error:', err.message)
   updateDbJob({
     status: 'error',
