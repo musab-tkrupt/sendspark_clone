@@ -101,8 +101,19 @@ async function recordPagedVideo(url) {
   await recorder.start(outputPath)
   log('recorder: capture started')
 
-  log(`page: goto ${url} (networkidle0, 30s)`)
-  await page.goto(url, { waitUntil: 'networkidle0', timeout: 30000 })
+  // domcontentloaded fires as soon as the HTML is parsed — much faster than
+  // networkidle0 which waits for ALL network requests to settle (never happens
+  // on modern sites with analytics/fonts/websockets). We add a 3s wait
+  // afterwards to let above-the-fold content render visually.
+  log(`page: goto ${url} (domcontentloaded, 60s)`)
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 })
+  } catch (err) {
+    // If even domcontentloaded times out, try to continue with whatever loaded.
+    log(`page: goto warning — ${err.message} — continuing with partial load`)
+  }
+  log('page: waiting 3s for above-the-fold render')
+  await sleep(3000)
   log('page: load complete')
 
   log('scroll: smooth page-by-page in page context')
