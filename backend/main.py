@@ -139,23 +139,50 @@ def _extract_thumbnail(video_path: str, thumbnail_path: str) -> None:
     except Exception:
         duration = 0.0
     timestamp = 1.0 if duration <= 0 else max(0.0, min(duration * 0.5, max(duration - 0.1, 0.0)))
+
+    # Extract raw frame first, then composite a play button over it.
+    raw_path = thumbnail_path + "_raw.jpg"
     subprocess.run(
         [
-            "ffmpeg",
-            "-y",
-            "-ss",
-            f"{timestamp:.3f}",
-            "-i",
-            video_path,
-            "-frames:v",
-            "1",
-            "-q:v",
-            "2",
-            thumbnail_path,
+            "ffmpeg", "-y",
+            "-ss", f"{timestamp:.3f}",
+            "-i", video_path,
+            "-frames:v", "1",
+            "-q:v", "2",
+            raw_path,
         ],
         check=True,
         capture_output=True,
     )
+
+    # Overlay a semi-transparent dark circle with a white play triangle.
+    # drawellipse fills the circle; drawtext draws "▶" centred inside it.
+    try:
+        subprocess.run(
+            [
+                "ffmpeg", "-y",
+                "-i", raw_path,
+                "-vf",
+                (
+                    "drawbox=x=0:y=0:w=iw:h=ih:color=black@0.25:t=fill,"
+                    "drawellipse=x=iw/2-60:y=ih/2-60:w=120:h=120:color=black@0.55:t=fill,"
+                    "drawtext=text='▶':fontsize=52:fontcolor=white@0.95"
+                    ":x=(w-text_w)/2+6:y=(h-text_h)/2"
+                ),
+                "-frames:v", "1",
+                "-q:v", "2",
+                thumbnail_path,
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except subprocess.CalledProcessError:
+        # drawellipse / drawtext unavailable on this ffmpeg build — use raw frame.
+        os.rename(raw_path, thumbnail_path)
+        return
+    finally:
+        if os.path.exists(raw_path):
+            os.remove(raw_path)
 
 
 def _build_preview_html(
@@ -163,6 +190,8 @@ def _build_preview_html(
     preview_url: str,
     video_url: str,
     thumbnail_url: str,
+    video_width: int = 1280,
+    video_height: int = 720,
 ) -> str:
     safe_name = html.escape(lead_name)
     safe_preview_url = html.escape(preview_url)
@@ -184,28 +213,70 @@ def _build_preview_html(
     <meta property="og:type" content="video.other" />
     <meta property="og:url" content="{safe_preview_url}" />
     <meta property="og:image" content="{safe_thumbnail_url}" />
+    <meta property="og:image:width" content="{video_width}" />
+    <meta property="og:image:height" content="{video_height}" />
     <meta property="og:video" content="{safe_video_url}" />
+    <meta property="og:video:secure_url" content="{safe_video_url}" />
     <meta property="og:video:type" content="video/mp4" />
+    <meta property="og:video:width" content="{video_width}" />
+    <meta property="og:video:height" content="{video_height}" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content="{safe_title}" />
     <meta name="twitter:description" content="{safe_description}" />
     <meta name="twitter:image" content="{safe_thumbnail_url}" />
     <style>
-      body {{ margin: 0; font-family: Arial, sans-serif; background: #0b1020; color: #f4f4f5; }}
-      .wrap {{ max-width: 920px; margin: 32px auto; padding: 0 16px; }}
-      h1 {{ font-size: 24px; margin: 0 0 12px; }}
-      p {{ margin: 0 0 18px; color: #d4d4d8; }}
-      video {{ width: 100%; border-radius: 12px; background: #000; }}
+      *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+      html, body {{ height: 100%; background: #0b0f1a; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
+      body {{ display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; }}
+      .card {{ width: 100%; max-width: 860px; }}
+      .meta {{ margin-bottom: 16px; }}
+      .meta h1 {{ font-size: clamp(18px, 3vw, 26px); font-weight: 700; letter-spacing: -0.3px; }}
+      .meta p {{ font-size: 14px; color: #94a3b8; margin-top: 4px; }}
+      .player-wrap {{ position: relative; width: 100%; border-radius: 14px; overflow: hidden; background: #000; box-shadow: 0 24px 64px rgba(0,0,0,0.6); cursor: pointer; }}
+      .player-wrap video {{ width: 100%; display: block; }}
+      .play-overlay {{
+        position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+        background: rgba(0,0,0,0.3); transition: opacity 0.2s;
+      }}
+      .play-overlay.hidden {{ opacity: 0; pointer-events: none; }}
+      .play-btn {{
+        width: 80px; height: 80px; border-radius: 50%;
+        background: rgba(255,255,255,0.15); backdrop-filter: blur(6px);
+        border: 2px solid rgba(255,255,255,0.4);
+        display: flex; align-items: center; justify-content: center;
+        transition: transform 0.15s, background 0.15s;
+      }}
+      .play-btn svg {{ width: 32px; height: 32px; fill: white; margin-left: 4px; }}
+      .player-wrap:hover .play-btn {{ transform: scale(1.08); background: rgba(255,255,255,0.25); }}
     </style>
   </head>
   <body>
-    <div class="wrap">
-      <h1>Video for {safe_name}</h1>
-      <p>Click play to watch your personalized message.</p>
-      <video controls playsinline poster="{safe_thumbnail_url}">
-        <source src="{safe_video_url}" type="video/mp4" />
-      </video>
+    <div class="card">
+      <div class="meta">
+        <h1>Video for {safe_name}</h1>
+        <p>Click to watch your personalized message.</p>
+      </div>
+      <div class="player-wrap" id="wrap">
+        <video id="vid" controls playsinline preload="metadata" poster="{safe_thumbnail_url}">
+          <source src="{safe_video_url}" type="video/mp4" />
+        </video>
+        <div class="play-overlay" id="overlay">
+          <div class="play-btn">
+            <svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+          </div>
+        </div>
+      </div>
     </div>
+    <script>
+      var vid = document.getElementById('vid');
+      var overlay = document.getElementById('overlay');
+      document.getElementById('wrap').addEventListener('click', function() {{
+        overlay.classList.add('hidden');
+        vid.play();
+      }});
+      vid.addEventListener('pause', function() {{ overlay.classList.remove('hidden'); }});
+      vid.addEventListener('ended', function() {{ overlay.classList.remove('hidden'); }});
+    </script>
   </body>
 </html>
 """
@@ -239,11 +310,18 @@ def _upload_lead_preview_assets(local_video_path: str, lead_name: str) -> dict[s
     temp_html_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_index.html")
     try:
         _extract_thumbnail(local_video_path, temp_thumb_path)
+        try:
+            vw, vh = _get_video_size(local_video_path)
+            video_width, video_height = int(vw), int(vh)
+        except Exception:
+            video_width, video_height = 1280, 720
         preview_html = _build_preview_html(
             lead_name=lead_name,
             preview_url=expected_preview_url,
             video_url=expected_video_url,
             thumbnail_url=expected_thumb_url,
+            video_width=video_width,
+            video_height=video_height,
         )
         with open(temp_html_path, "w", encoding="utf-8") as f:
             f.write(preview_html)

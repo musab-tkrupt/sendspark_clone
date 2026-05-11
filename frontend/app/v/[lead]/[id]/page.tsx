@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
+import VideoPlayer from "./VideoPlayer";
 
 type PreviewMetadata = {
   lead_slug: string;
@@ -43,8 +44,8 @@ export async function generateMetadata({
       description: data.description,
       type: "video.other",
       url: data.canonical_url,
-      images: [{ url: data.thumbnail_url }],
-      videos: [{ url: data.video_url, type: "video/mp4" }],
+      images: [{ url: data.thumbnail_url, width: 1280, height: 720 }],
+      videos: [{ url: data.video_url, secureUrl: data.video_url, type: "video/mp4", width: 1280, height: 720 }],
     },
     twitter: {
       card: "summary_large_image",
@@ -65,17 +66,13 @@ export default async function PreviewPage({
   if (!data) notFound();
 
   return (
-    <main className="min-h-screen bg-[#0b1020] text-zinc-100 p-4 sm:p-8">
-      <div className="max-w-4xl mx-auto">
-        <h1 className="text-2xl sm:text-3xl font-semibold mb-2">{data.title}</h1>
-        <p className="text-zinc-300 mb-5">{data.description}</p>
-        <video
-          controls
-          playsInline
-          poster={data.thumbnail_url}
-          src={data.video_url}
-          className="w-full rounded-xl bg-black border border-zinc-800"
-        />
+    <main className="min-h-screen bg-[#0b0f1a] text-zinc-100 flex flex-col items-center justify-center p-4 sm:p-8">
+      <div className="w-full max-w-4xl">
+        <div className="mb-4">
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">{data.title}</h1>
+          <p className="text-zinc-400 mt-1 text-sm">{data.description}</p>
+        </div>
+        <VideoPlayer src={data.video_url} poster={data.thumbnail_url} />
       </div>
     </main>
   );
