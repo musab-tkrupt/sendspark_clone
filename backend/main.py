@@ -5,6 +5,7 @@ import mimetypes
 import os
 import re
 import subprocess
+import threading
 import time
 import uuid
 import zipfile
@@ -43,6 +44,9 @@ def _parse_cors_origins(raw: str) -> list[str]:
 model: Any | None = None
 jobs: dict = {}
 composite_jobs: dict = {}
+# Maps normalized URL → job_id for recordings currently in progress.
+# Prevents duplicate recorders when the same URL is requested concurrently.
+_scroll_in_flight: dict[str, str] = {}
 
 BACKEND_ROOT = os.path.abspath(os.path.dirname(__file__))
 PUPPETEER_CACHE_DIR = os.path.join(BACKEND_ROOT, ".puppeteer_cache")
@@ -813,7 +817,14 @@ async def generate_scroll(url: str = Form(...)):
                 pass
             return {"jobId": job_id, "cached": True}
 
+    # Deduplication: if this URL is already being recorded, reuse that job.
+    existing_id = _scroll_in_flight.get(normalized_url)
+    if existing_id:
+        print(f"[scroll] dedup hit for {normalized_url} → reusing job {existing_id[:8]}")
+        return {"jobId": existing_id, "deduped": True}
+
     # No usable cache — spawn the recorder.
+    _scroll_in_flight[normalized_url] = job_id
     with open(os.path.join(jobs_dir, f"{job_id}.json"), "w") as f:
         json.dump({"status": "recording"}, f)
     try:
@@ -825,13 +836,19 @@ async def generate_scroll(url: str = Form(...)):
     child_env = os.environ.copy()
     child_env["SCROLL_JOB_LOG"] = log_path
     child_env["PUPPETEER_CACHE_DIR"] = PUPPETEER_CACHE_DIR
-    subprocess.Popen(
-        ["node", "scripts/record-paged.js", normalized_url, job_id],
-        cwd=BACKEND_ROOT,
-        env=child_env,
-        stdout=None,
-        stderr=None,
-    )
+
+    def _run_and_cleanup():
+        proc = subprocess.Popen(
+            ["node", "scripts/record-paged.js", normalized_url, job_id],
+            cwd=BACKEND_ROOT,
+            env=child_env,
+            stdout=None,
+            stderr=None,
+        )
+        proc.wait()
+        _scroll_in_flight.pop(normalized_url, None)
+
+    threading.Thread(target=_run_and_cleanup, daemon=True).start()
     return {"jobId": job_id}
 
 
