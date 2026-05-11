@@ -9,6 +9,8 @@ type PreviewMetadata = {
   video_url: string;
   thumbnail_url: string;
   canonical_url: string;
+  image_width?: number;
+  image_height?: number;
 };
 
 const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
@@ -43,7 +45,13 @@ export async function generateMetadata({
       description: data.description,
       type: "video.other",
       url: data.canonical_url,
-      images: [{ url: data.thumbnail_url }],
+      images: [
+        {
+          url: data.thumbnail_url,
+          width: data.image_width || 1200,
+          height: data.image_height || 630,
+        },
+      ],
       videos: [{ url: data.video_url, type: "video/mp4" }],
     },
     twitter: {

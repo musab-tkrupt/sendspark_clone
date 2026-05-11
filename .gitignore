@@ -2,6 +2,7 @@
 env/
 backend/.venv/
 backend/venv/
+backend/.jobs
 
 # Environment files (keep examples committed)
 backend/.env

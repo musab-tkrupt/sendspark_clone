@@ -4,6 +4,28 @@ const fs = require('fs')
 const path = require('path')
 
 const jobId = process.argv[3]
+const supabaseUrl = (process.env.SUPABASE_URL || '').trim()
+const supabaseServiceRoleKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim()
+
+async function updateDbJob(patch) {
+  if (!jobId || !supabaseUrl || !supabaseServiceRoleKey) return
+  const baseUrl = supabaseUrl.replace(/\/+$/, '')
+  const res = await fetch(`${baseUrl}/rest/v1/scroll_jobs?id=eq.${encodeURIComponent(jobId)}`, {
+    method: 'PATCH',
+    headers: {
+      apikey: supabaseServiceRoleKey,
+      Authorization: `Bearer ${supabaseServiceRoleKey}`,
+      'Content-Type': 'application/json',
+      Prefer: 'return=minimal',
+    },
+    body: JSON.stringify(patch),
+  })
+  if (!res.ok) {
+    const body = await res.text()
+    throw new Error(`Supabase scroll_jobs PATCH failed (${res.status}): ${body}`)
+  }
+}
+
 function updateJob(data) {
   if (!jobId) return
   const dir = path.join(process.cwd(), '.jobs')
@@ -17,6 +39,7 @@ function sleep(ms) {
 
 async function recordPagedVideo(url) {
   fs.mkdirSync('./outputs', { recursive: true })
+  await updateDbJob({ status: 'recording', error: null, filename: null })
 
   const filename = url
     .replace(/https?:\/\//, '')
@@ -73,6 +96,12 @@ async function recordPagedVideo(url) {
   await browser.close()
 
   console.log(`✅ Done! Video saved to ${outputPath}`)
+  await updateDbJob({
+    status: 'done',
+    filename: `${filename}-paged.mp4`,
+    error: null,
+    completed_at: new Date().toISOString(),
+  })
   updateJob({ status: 'done', filename: `${filename}-paged.mp4` })
 }
 
@@ -86,6 +115,13 @@ if (!url) {
 
 recordPagedVideo(url).catch((err) => {
   console.error('Error:', err.message)
+  updateDbJob({
+    status: 'error',
+    error: err.message,
+    completed_at: new Date().toISOString(),
+  }).catch((dbErr) => {
+    console.error('Failed to update DB job:', dbErr.message)
+  })
   updateJob({ status: 'error', error: err.message })
   process.exit(1)
 })

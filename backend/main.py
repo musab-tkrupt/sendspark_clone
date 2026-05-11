@@ -8,6 +8,7 @@ import subprocess
 import time
 import uuid
 import zipfile
+from datetime import datetime, timezone
 from io import BytesIO
 
 import httpx
@@ -21,12 +22,15 @@ from supabase import Client, create_client
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+]
+
+
+def _parse_cors_origins(raw: str) -> list[str]:
+    origins = [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return origins or DEFAULT_CORS_ORIGINS
 
 model: ChatterboxTTS | None = None
 jobs: dict = {}
@@ -55,6 +59,16 @@ def _load_local_env() -> None:
 
 
 _load_local_env()
+
+CORS_ALLOW_ORIGINS = _parse_cors_origins(
+    os.getenv("CORS_ALLOW_ORIGINS", ",".join(DEFAULT_CORS_ORIGINS))
+)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ALLOW_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
@@ -110,6 +124,57 @@ def _supabase_public_url(object_key: str) -> str | None:
     if not supabase_client or not SUPABASE_STORAGE_BUCKET:
         return None
     return supabase_client.storage.from_(SUPABASE_STORAGE_BUCKET).get_public_url(object_key)
+
+
+def _scroll_job_create(job_id: str, url: str) -> None:
+    if not supabase_client:
+        return
+    supabase_client.table("scroll_jobs").upsert(
+        {
+            "id": job_id,
+            "url": url,
+            "status": "queued",
+            "attempts": 1,
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ).execute()
+
+
+def _scroll_job_status_update(
+    job_id: str,
+    status: str,
+    *,
+    filename: str | None = None,
+    error: str | None = None,
+) -> None:
+    if not supabase_client:
+        return
+    payload: dict[str, str | None] = {"status": status}
+    if filename is not None:
+        payload["filename"] = filename
+    if error is not None:
+        payload["error"] = error
+    if status in {"done", "error"}:
+        payload["completed_at"] = datetime.now(timezone.utc).isoformat()
+    supabase_client.table("scroll_jobs").update(payload).eq("id", job_id).execute()
+
+
+def _scroll_job_get(job_id: str) -> dict | None:
+    if not supabase_client:
+        return None
+    result = supabase_client.table("scroll_jobs").select("*").eq("id", job_id).limit(1).execute()
+    rows = result.data or []
+    return rows[0] if rows else None
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        normalized = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
 
 
 def _slugify(value: str) -> str:
@@ -275,6 +340,8 @@ def preview_metadata(lead_slug: str, preview_id: str):
     display_name = safe_lead.replace("-", " ").title()
     title = f"{display_name} - Personalized Video"
     description = f"A personalized video message for {display_name}."
+    image_width = 1200
+    image_height = 630
     return {
         "lead_slug": safe_lead,
         "preview_id": safe_preview,
@@ -282,6 +349,8 @@ def preview_metadata(lead_slug: str, preview_id: str):
         "description": description,
         "video_url": video_url,
         "thumbnail_url": thumbnail_url,
+        "image_width": image_width,
+        "image_height": image_height,
         "canonical_url": _frontend_preview_url(safe_lead, safe_preview) or _supabase_public_url(keys["html"]),
     }
 
@@ -648,16 +717,22 @@ def get_status(job_id: str):
 @app.post("/scroll")
 async def generate_scroll(url: str = Form(...)):
     job_id = str(uuid.uuid4())
+    normalized_url = url.strip()
     jobs_dir = os.path.join(BACKEND_ROOT, ".jobs")
     os.makedirs(jobs_dir, exist_ok=True)
     with open(os.path.join(jobs_dir, f"{job_id}.json"), "w") as f:
         json.dump({"status": "recording"}, f)
+    try:
+        _scroll_job_create(job_id, normalized_url)
+    except Exception:
+        # Keep local fallback behavior if durable storage is unavailable.
+        pass
 
     # Keep a per-job recorder log so failed Puppeteer runs are debuggable.
     log_path = os.path.join(jobs_dir, f"{job_id}.log")
     log_file = open(log_path, "ab")
     subprocess.Popen(
-        ["node", "scripts/record-paged.js", url, job_id],
+        ["node", "scripts/record-paged.js", normalized_url, job_id],
         cwd=BACKEND_ROOT,
         stdout=log_file,
         stderr=subprocess.STDOUT,
@@ -668,6 +743,35 @@ async def generate_scroll(url: str = Form(...)):
 
 @app.get("/scroll-status/{job_id}")
 def scroll_status(job_id: str):
+    db_job = None
+    try:
+        db_job = _scroll_job_get(job_id)
+    except Exception:
+        db_job = None
+
+    if db_job:
+        status = db_job.get("status")
+        if status == "recording":
+            updated_at = _parse_iso_datetime(db_job.get("updated_at"))
+            if updated_at:
+                stale_for = (datetime.now(timezone.utc) - updated_at).total_seconds()
+                if stale_for > SCROLL_STATUS_STALE_SECONDS:
+                    err_data = {
+                        "status": "error",
+                        "error": "Scroll recorder timed out while recording.",
+                    }
+                    try:
+                        _scroll_job_status_update(job_id, "error", error=err_data["error"])
+                    except Exception:
+                        pass
+                    return err_data
+        response = {"status": status}
+        if db_job.get("filename"):
+            response["filename"] = db_job.get("filename")
+        if db_job.get("error"):
+            response["error"] = db_job.get("error")
+        return response
+
     job_file = os.path.join(BACKEND_ROOT, ".jobs", f"{job_id}.json")
     if not os.path.exists(job_file):
         return JSONResponse({"status": "not_found"}, status_code=404)
