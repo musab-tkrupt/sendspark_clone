@@ -26,6 +26,11 @@ type CompositeFile = {
   thumbnail_public_url?: string | null;
   preview_id?: string | null;
   lead_slug?: string | null;
+  gif_public_url?: string | null;
+  email_gif_url?: string | null;
+  image_preview_html_url?: string | null;
+  gif_preview_html_url?: string | null;
+  email_html_snippet?: string | null;
   error?: string;
 };
 type CompositeJob = {
@@ -68,6 +73,11 @@ function parseCsvRow(line: string): string[] {
   return out.map((v) => v.replace(/^["']|["']$/g, "").trim());
 }
 
+/** Paste into HTML email: click opens full MP4, visible teaser is the GIF. */
+function emailGifAnchorSnippet(mp4Href: string, gifSrc: string): string {
+  return `<a href="${mp4Href}" target="_blank">\n  <img src="${gifSrc}" width="600" style="display:block; border:0;" />\n</a>`;
+}
+
 export default function SendSpark() {
   const router = useRouter();
   const pathname = usePathname();
@@ -97,6 +107,8 @@ export default function SendSpark() {
   const [recordedUrl, setRecordedUrl] = useState<string | null>(null);
   const [skipSeconds, setSkipSeconds] = useState(3);
   const [scrollStartSeconds, setScrollStartSeconds] = useState(0);
+  const [gifStartSeconds, setGifStartSeconds] = useState(0);
+  const [gifEndSeconds, setGifEndSeconds] = useState(4);
   const [screenScale, setScreenScale] = useState(0.85);
 
   // Composite
@@ -517,6 +529,8 @@ export default function SendSpark() {
     if (voiceFile) form.append("ref_audio", voiceFile, voiceFile.name);
     form.append("skip_seconds", String(skipSeconds));
     form.append("scroll_start_seconds", String(scrollStartSeconds));
+    form.append("gif_start_seconds", String(gifStartSeconds));
+    form.append("gif_end_seconds", String(gifEndSeconds));
 
     const contactsWithScroll = contacts.filter((c) => c.scrollFilename);
     form.append(
@@ -542,20 +556,38 @@ export default function SendSpark() {
     );
 
     const escapeCsv = (val: string) => `"${val.replace(/"/g, '""')}"`;
-    const header = "Name,Website URL,Video URL";
+    const header =
+      "Name,Website URL,GIF URL,Image preview HTML URL,GIF preview HTML URL,MP4 URL,Email HTML (GIF in link to MP4)";
     const rows = compositeJob.files
       .filter(
         (entry) =>
-          !entry.error && (entry.preview_url || entry.public_url || entry.video_public_url || entry.filename)
+          !entry.error &&
+          (entry.preview_url ||
+            entry.public_url ||
+            entry.video_public_url ||
+            entry.filename ||
+            entry.email_gif_url ||
+            entry.gif_public_url ||
+            entry.image_preview_html_url ||
+            entry.gif_preview_html_url)
       )
       .map((entry) => {
         const website = contactByName.get(entry.name.trim().toLowerCase()) || "";
-        const videoUrl =
+        const gifUrl = entry.email_gif_url || entry.gif_public_url || "";
+        const imageHtml =
+          entry.image_preview_html_url || entry.supabase_preview_url || "";
+        const gifPreviewHtml = entry.gif_preview_html_url || "";
+        const mp4Url =
+          entry.video_public_url ||
           entry.preview_url ||
           entry.public_url ||
-          entry.video_public_url ||
-          `${API}/download/${entry.filename}`;
-        return [entry.name, website, videoUrl].map((v) => escapeCsv(v || "")).join(",");
+          `${API}/download/${entry.filename || ""}`;
+        const emailSnippet =
+          entry.email_html_snippet ||
+          (gifUrl && mp4Url ? emailGifAnchorSnippet(mp4Url, gifUrl) : "");
+        return [entry.name, website, gifUrl, imageHtml, gifPreviewHtml, mp4Url, emailSnippet]
+          .map((v) => escapeCsv(v || ""))
+          .join(",");
       });
 
     const csv = [header, ...rows].join("\n");
@@ -600,7 +632,7 @@ export default function SendSpark() {
 
       {/* Header */}
       <div className="w-full">
-        <h1 className="text-4xl font-bold tracking-tight mb-1">SendSpark Clone</h1>
+        <h1 className="text-4xl font-bold tracking-tight mb-1">Tkrupt outreach video</h1>
         <p className="text-gray-400 text-sm">
           {isElevenLabsMode
             ? "Personalised video outreach — ElevenLabs cloned greeting + website scroll background"
@@ -939,6 +971,48 @@ export default function SendSpark() {
             </div>
           </div>
 
+          <div className="flex flex-col gap-3 bg-gray-900 border border-gray-800 rounded-2xl px-6 py-4">
+            <div>
+              <p className="text-sm font-medium">Email GIF clip (from final video)</p>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Start and end time on the finished MP4 used for the looping email GIF (play button + full-length badge).
+                Clip is capped at 15 seconds.
+              </p>
+            </div>
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="flex flex-1 items-center justify-between bg-gray-800/80 border border-gray-700/80 rounded-xl px-4 py-3">
+                <span className="text-sm text-gray-300">GIF start time</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={600}
+                    step={0.1}
+                    value={gifStartSeconds}
+                    onChange={(e) => setGifStartSeconds(Number(e.target.value))}
+                    className="w-20 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-purple-500 text-center"
+                  />
+                  <span className="text-sm text-gray-400">sec</span>
+                </div>
+              </div>
+              <div className="flex flex-1 items-center justify-between bg-gray-800/80 border border-gray-700/80 rounded-xl px-4 py-3">
+                <span className="text-sm text-gray-300">GIF end time</span>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    min={0}
+                    max={600}
+                    step={0.1}
+                    value={gifEndSeconds}
+                    onChange={(e) => setGifEndSeconds(Number(e.target.value))}
+                    className="w-20 bg-gray-900 border border-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:border-purple-500 text-center"
+                  />
+                  <span className="text-sm text-gray-400">sec</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
           {recordMode === "screen" && (
             <div className="flex items-center justify-between bg-gray-900 border border-gray-800 rounded-2xl px-6 py-4">
               <div>
@@ -1010,6 +1084,30 @@ export default function SendSpark() {
                   className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs outline-none focus:border-purple-500 text-center"
                 />
               </div>
+              <div className="flex items-center justify-between bg-gray-800 rounded-xl px-3 py-2">
+                <span className="text-xs text-gray-300">GIF start (sec)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={600}
+                  step={0.1}
+                  value={gifStartSeconds}
+                  onChange={(e) => setGifStartSeconds(Number(e.target.value))}
+                  className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs outline-none focus:border-purple-500 text-center"
+                />
+              </div>
+              <div className="flex items-center justify-between bg-gray-800 rounded-xl px-3 py-2">
+                <span className="text-xs text-gray-300">GIF end (sec)</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={600}
+                  step={0.1}
+                  value={gifEndSeconds}
+                  onChange={(e) => setGifEndSeconds(Number(e.target.value))}
+                  className="w-16 bg-gray-900 border border-gray-700 rounded px-2 py-1 text-xs outline-none focus:border-purple-500 text-center"
+                />
+              </div>
             </div>
             <button
               onClick={processVideos}
@@ -1075,31 +1173,51 @@ export default function SendSpark() {
                   {entry.error ? (
                     <span className="text-red-400 text-xs">{entry.error}</span>
                   ) : entry.filename ? (
-                    <div className="flex items-center gap-3">
+                    <div className="flex flex-wrap items-center gap-2 justify-end">
                       {(() => {
-                        const shareUrl =
-                          entry.preview_url ||
-                          entry.public_url ||
-                          entry.video_public_url ||
-                          `${API}/download/${entry.filename}`;
+                        const imageHtml = entry.image_preview_html_url || entry.supabase_preview_url;
+                        const gifPreviewHtml = entry.gif_preview_html_url;
+                        const emailGifUrl = entry.email_gif_url || entry.gif_public_url;
                         const mp4Url = entry.video_public_url || `${API}/download/${entry.filename}`;
                         return (
                           <>
-                            <a
-                              href={shareUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="text-purple-400 hover:text-purple-300 text-xs transition"
-                            >
-                              Open
-                            </a>
+                            {emailGifUrl ? (
+                              <a
+                                href={emailGifUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-emerald-400 hover:text-emerald-300 text-xs transition"
+                              >
+                                GIF file
+                              </a>
+                            ) : null}
+                            {imageHtml ? (
+                              <a
+                                href={imageHtml}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-purple-400 hover:text-purple-300 text-xs transition"
+                              >
+                                Image HTML
+                              </a>
+                            ) : null}
+                            {gifPreviewHtml ? (
+                              <a
+                                href={gifPreviewHtml}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-cyan-400 hover:text-cyan-300 text-xs transition"
+                              >
+                                GIF preview HTML
+                              </a>
+                            ) : null}
                             <a
                               href={mp4Url}
                               target="_blank"
                               rel="noreferrer"
                               className="text-indigo-400 hover:text-indigo-300 text-xs transition"
                             >
-                              Open MP4
+                              MP4
                             </a>
                             <a
                               href={mp4Url}
@@ -1114,32 +1232,102 @@ export default function SendSpark() {
                     </div>
                   ) : null}
                 </div>
-                {(entry.preview_url || entry.public_url || entry.video_public_url) && (
-                  <div className="flex items-center gap-2">
-                    {(() => {
-                      const shareUrl =
-                        entry.preview_url ||
-                        entry.public_url ||
-                        entry.video_public_url ||
-                        `${API}/download/${entry.filename}`;
-                      return (
-                        <>
-                          <input
-                            readOnly
-                            value={shareUrl}
-                            className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
-                          />
-                          <button
-                            onClick={() => navigator.clipboard.writeText(shareUrl)}
-                            className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
-                          >
-                            Copy URL
-                          </button>
-                        </>
-                      );
-                    })()}
+                {(entry.email_gif_url || entry.gif_public_url) && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500">1) GIF file URL (email &lt;img src&gt;)</span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        readOnly
+                        value={entry.email_gif_url || entry.gif_public_url || ""}
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          navigator.clipboard.writeText(entry.email_gif_url || entry.gif_public_url || "")
+                        }
+                        className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition whitespace-nowrap"
+                      >
+                        Copy
+                      </button>
+                    </div>
                   </div>
                 )}
+                {(entry.image_preview_html_url || entry.supabase_preview_url) && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500">
+                      2) Image preview HTML (Open Graph uses static thumbnail)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        readOnly
+                        value={entry.image_preview_html_url || entry.supabase_preview_url || ""}
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={() =>
+                          navigator.clipboard.writeText(
+                            entry.image_preview_html_url || entry.supabase_preview_url || ""
+                          )
+                        }
+                        className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition whitespace-nowrap"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {entry.gif_preview_html_url && (
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs text-gray-500">
+                      3) GIF preview HTML (Open Graph image = animated GIF)
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <input
+                        readOnly
+                        value={entry.gif_preview_html_url}
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(entry.gif_preview_html_url || "")}
+                        className="bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition whitespace-nowrap"
+                      >
+                        Copy
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {(() => {
+                  const gifUrl = entry.email_gif_url || entry.gif_public_url;
+                  const mp4Url = entry.video_public_url || (entry.filename ? `${API}/download/${entry.filename}` : "");
+                  const snippet =
+                    entry.email_html_snippet ||
+                    (gifUrl && mp4Url ? emailGifAnchorSnippet(mp4Url, gifUrl) : "");
+                  if (!snippet) return null;
+                  return (
+                    <div className="flex flex-col gap-1">
+                      <span className="text-xs text-gray-500">
+                        4) Email HTML snippet — <code className="text-gray-400">&lt;a href&gt;</code> = full video
+                        (MP4), <code className="text-gray-400">&lt;img src&gt;</code> = GIF
+                      </span>
+                      <textarea
+                        readOnly
+                        rows={4}
+                        value={snippet}
+                        className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-2 text-xs text-gray-300 font-mono resize-y min-h-[5.5rem]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => navigator.clipboard.writeText(snippet)}
+                        className="self-start bg-gray-700 hover:bg-gray-600 px-2 py-1 rounded text-xs transition"
+                      >
+                        Copy HTML
+                      </button>
+                    </div>
+                  );
+                })()}
                 {entry.filename && (
                   <video
                     src={entry.video_public_url || `${API}/download/${entry.filename}`}

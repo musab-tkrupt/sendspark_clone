@@ -63,7 +63,7 @@ SUPABASE_PATH_PREFIX = os.getenv("SUPABASE_PATH_PREFIX", "sendspark").strip().st
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
 ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128").strip()
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://sendspark-clone.vercel.app").strip().rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://tkrupt.com").strip().rstrip("/")
 SCROLL_STATUS_STALE_SECONDS = int(os.getenv("SCROLL_STATUS_STALE_SECONDS", "90"))
 ENABLE_CHATTERBOX = os.getenv("ENABLE_CHATTERBOX", "false").strip().lower() in {
     "1",
@@ -95,6 +95,7 @@ def _upload_file_to_supabase(local_path: str, object_key: str) -> str | None:
         ".jpeg": "image/jpeg",
         ".png": "image/png",
         ".mp4": "video/mp4",
+        ".gif": "image/gif",
     }
     content_type = forced_types.get(ext) or mimetypes.guess_type(local_path)[0] or "application/octet-stream"
     with open(local_path, "rb") as f:
@@ -117,12 +118,18 @@ def _slugify(value: str) -> str:
     return slug or "lead"
 
 
+def _preview_bundle_storage_key(lead_slug: str, preview_id: str, filename: str) -> str:
+    """Public preview files live at previews/... (no SUPABASE_PATH_PREFIX) for clean direct URLs."""
+    return f"previews/{lead_slug}/{preview_id}/{filename}"
+
+
 def _preview_object_keys(lead_slug: str, preview_id: str) -> dict[str, str]:
-    preview_root = f"previews/{lead_slug}/{preview_id}"
     return {
-        "video": _supabase_object_key("video.mp4", preview_root),
-        "thumbnail": _supabase_object_key("thumbnail.jpg", preview_root),
-        "html": _supabase_object_key("index.html", preview_root),
+        "video": _preview_bundle_storage_key(lead_slug, preview_id, "video.mp4"),
+        "thumbnail": _preview_bundle_storage_key(lead_slug, preview_id, "thumbnail.jpg"),
+        "html": _preview_bundle_storage_key(lead_slug, preview_id, "index.html"),
+        "gif": _preview_bundle_storage_key(lead_slug, preview_id, "preview.gif"),
+        "gif_preview_html": _preview_bundle_storage_key(lead_slug, preview_id, "gif-preview.html"),
     }
 
 
@@ -130,6 +137,19 @@ def _frontend_preview_url(lead_slug: str, preview_id: str) -> str | None:
     if not FRONTEND_URL:
         return None
     return f"{FRONTEND_URL}/v/{lead_slug}/{preview_id}"
+
+
+def _compose_email_html_snippet(video_public_url: str | None, gif_url: str | None) -> str | None:
+    """HTML email snippet: anchor = full MP4, image = GIF."""
+    if not video_public_url or not gif_url:
+        return None
+    safe_v = html.escape(video_public_url, quote=True)
+    safe_g = html.escape(gif_url, quote=True)
+    return (
+        f'<a href="{safe_v}" target="_blank">\n'
+        f'  <img src="{safe_g}" width="600" style="display:block; border:0;" />\n'
+        "</a>"
+    )
 
 
 def _extract_thumbnail(video_path: str, thumbnail_path: str) -> None:
@@ -282,7 +302,176 @@ def _build_preview_html(
 """
 
 
-def _upload_lead_preview_assets(local_video_path: str, lead_name: str) -> dict[str, str | None]:
+def _build_gif_preview_html(
+    lead_name: str,
+    page_url: str,
+    video_url: str,
+    gif_url: str,
+    gif_width: int = 600,
+    gif_height: int = 338,
+) -> str:
+    """Standalone share page: Open Graph / Twitter image point at the animated GIF."""
+    safe_name = html.escape(lead_name)
+    safe_page_url = html.escape(page_url)
+    safe_video_url = html.escape(video_url)
+    safe_gif_url = html.escape(gif_url)
+    title = f"{lead_name} - Personalized Video (preview)"
+    description = f"A personalized video message for {lead_name}."
+    safe_title = html.escape(title)
+    safe_description = html.escape(description)
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{safe_title}</title>
+    <meta name="description" content="{safe_description}" />
+    <meta property="og:title" content="{safe_title}" />
+    <meta property="og:description" content="{safe_description}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="{safe_page_url}" />
+    <meta property="og:image" content="{safe_gif_url}" />
+    <meta property="og:image:type" content="image/gif" />
+    <meta property="og:image:width" content="{gif_width}" />
+    <meta property="og:image:height" content="{gif_height}" />
+    <meta property="og:video" content="{safe_video_url}" />
+    <meta property="og:video:secure_url" content="{safe_video_url}" />
+    <meta property="og:video:type" content="video/mp4" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="{safe_title}" />
+    <meta name="twitter:description" content="{safe_description}" />
+    <meta name="twitter:image" content="{safe_gif_url}" />
+    <style>
+      *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+      html, body {{ height: 100%; background: #0b0f1a; color: #f4f4f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
+      body {{ display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; padding: 24px 16px; }}
+      .card {{ width: 100%; max-width: 720px; text-align: center; }}
+      .meta {{ margin-bottom: 16px; }}
+      .meta h1 {{ font-size: clamp(18px, 3vw, 26px); font-weight: 700; letter-spacing: -0.3px; }}
+      .meta p {{ font-size: 14px; color: #94a3b8; margin-top: 4px; }}
+      .gif-wrap {{ display: inline-block; border-radius: 14px; overflow: hidden; background: #000; box-shadow: 0 24px 64px rgba(0,0,0,0.6); }}
+      .gif-wrap img {{ display: block; max-width: 100%; height: auto; vertical-align: middle; }}
+      .cta {{ margin-top: 20px; }}
+      .cta a {{
+        display: inline-block; padding: 12px 22px; border-radius: 10px;
+        background: #7c3aed; color: #fff; font-weight: 600; text-decoration: none; font-size: 14px;
+      }}
+      .cta a:hover {{ background: #6d28d9; }}
+    </style>
+  </head>
+  <body>
+    <div class="card">
+      <div class="meta">
+        <h1>Video for {safe_name}</h1>
+        <p>Preview loops below — tap to watch the full video.</p>
+      </div>
+      <a class="gif-wrap" href="{safe_video_url}">
+        <img src="{safe_gif_url}" alt="Video preview for {safe_name}" width="{gif_width}" height="{gif_height}" />
+      </a>
+      <div class="cta">
+        <a href="{safe_video_url}">Watch full video</a>
+      </div>
+    </div>
+  </body>
+</html>
+"""
+
+
+def _format_duration_badge(total_sec: float) -> str:
+    if total_sec < 0:
+        total_sec = 0.0
+    total_sec = int(round(total_sec))
+    m, s = total_sec // 60, total_sec % 60
+    if m >= 60:
+        h, m = m // 60, m % 60
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+
+def _drawtext_escape(text: str) -> str:
+    """Escape text for ffmpeg drawtext text=... filter argument."""
+    return (
+        text.replace("\\", "\\\\")
+        .replace(":", "\\:")
+        .replace("'", "")
+        .replace("%", "\\%")
+    )
+
+
+def _gif_clip_bounds(video_path: str, gif_start: float, gif_end: float) -> tuple[float, float]:
+    """Returns (start_sec, end_sec) on the source timeline; end is exclusive; max clip 15s."""
+    dur = max(_get_duration(video_path), 0.01)
+    start = max(0.0, min(float(gif_start), dur - 0.05))
+    end = float(gif_end)
+    if end <= start:
+        end = start + min(4.0, dur - start)
+    end = min(end, dur)
+    if end <= start + 0.05:
+        start, end = 0.0, min(4.0, dur)
+    max_len = 15.0
+    if end - start > max_len:
+        end = start + max_len
+    return start, end
+
+
+def _build_email_preview_gif(
+    local_video_path: str,
+    output_gif_path: str,
+    gif_start: float,
+    gif_end: float,
+) -> None:
+    """Short looping GIF for email: trim, scale to ~600px wide, fps 10, palette, play + duration overlays."""
+    start, end = _gif_clip_bounds(local_video_path, gif_start, gif_end)
+    clip_dur = end - start
+    full_dur = _get_duration(local_video_path)
+    badge = _drawtext_escape(_format_duration_badge(full_dur))
+
+    base_chain = (
+        f"trim=start={start}:duration={clip_dur},setpts=PTS-STARTPTS,"
+        f"fps=10,scale=600:-2:flags=lanczos,"
+        f"drawellipse=x=(iw/2-44):y=(ih/2-44):w=88:h=88:color=black@0.55:t=fill,"
+        f"drawtext=text='▶':fontsize=38:fontcolor=white@0.95:x=(w-text_w)/2+5:y=(h-text_h)/2,"
+        f"drawtext=text='{badge}':fontsize=15:fontcolor=white:x=w-tw-10:y=h-th-8:"
+        f"box=1:boxcolor=black@0.55:boxborderw=4"
+    )
+    palette_chain = (
+        f"{base_chain},split[s0][s1];[s0]palettegen=max_colors=256:stats_mode=diff[p];"
+        f"[s1][p]paletteuse=dither=bayer:bayer_scale=3"
+    )
+    simple_palette = (
+        f"trim=start={start}:duration={clip_dur},setpts=PTS-STARTPTS,"
+        f"fps=10,scale=600:-2:flags=lanczos,split[s0][s1];"
+        f"[s0]palettegen=max_colors=256:stats_mode=diff[p];[s1][p]paletteuse=dither=bayer:bayer_scale=3"
+    )
+    for lavfi in (palette_chain, simple_palette):
+        try:
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-i",
+                    local_video_path,
+                    "-lavfi",
+                    lavfi,
+                    "-loop",
+                    "0",
+                    output_gif_path,
+                ],
+                check=True,
+                capture_output=True,
+            )
+            return
+        except subprocess.CalledProcessError:
+            if lavfi is simple_palette:
+                raise
+
+
+def _upload_lead_preview_assets(
+    local_video_path: str,
+    lead_name: str,
+    gif_start_seconds: float = 0.0,
+    gif_end_seconds: float = 4.0,
+) -> dict[str, str | None]:
     lead_slug = _slugify(lead_name)
     preview_id = str(uuid.uuid4())
     result: dict[str, str | None] = {
@@ -291,8 +480,13 @@ def _upload_lead_preview_assets(local_video_path: str, lead_name: str) -> dict[s
         "preview_url": None,
         "vercel_preview_url": _frontend_preview_url(lead_slug, preview_id),
         "supabase_preview_url": None,
+        "image_preview_html_url": None,
+        "gif_preview_html_url": None,
         "video_public_url": None,
         "thumbnail_public_url": None,
+        "gif_public_url": None,
+        "email_gif_url": None,
+        "email_html_snippet": None,
     }
     if not supabase_client or not SUPABASE_STORAGE_BUCKET:
         return result
@@ -301,13 +495,19 @@ def _upload_lead_preview_assets(local_video_path: str, lead_name: str) -> dict[s
     video_key = keys["video"]
     thumb_key = keys["thumbnail"]
     html_key = keys["html"]
+    gif_key = keys["gif"]
+    gif_html_key = keys["gif_preview_html"]
 
     expected_video_url = _supabase_public_url(video_key) or ""
     expected_thumb_url = _supabase_public_url(thumb_key) or ""
     expected_preview_url = _supabase_public_url(html_key) or ""
+    expected_gif_url = _supabase_public_url(gif_key) or ""
+    expected_gif_preview_page_url = _supabase_public_url(gif_html_key) or ""
 
     temp_thumb_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_thumbnail.jpg")
     temp_html_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_index.html")
+    temp_gif_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_email.gif")
+    temp_gif_preview_html_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_gif_preview.html")
     try:
         _extract_thumbnail(local_video_path, temp_thumb_path)
         try:
@@ -330,13 +530,53 @@ def _upload_lead_preview_assets(local_video_path: str, lead_name: str) -> dict[s
         result["thumbnail_public_url"] = _upload_file_to_supabase(temp_thumb_path, thumb_key)
         html_preview_url = _upload_file_to_supabase(temp_html_path, html_key)
         result["supabase_preview_url"] = html_preview_url
-        result["preview_url"] = result["vercel_preview_url"] or html_preview_url
+        result["image_preview_html_url"] = html_preview_url
+        result["preview_url"] = (
+            result["image_preview_html_url"] or result["vercel_preview_url"] or result["video_public_url"]
+        )
+
+        gif_w, gif_h = 600, max(2, int(round(600 * video_height / max(video_width, 1))))
+        try:
+            _build_email_preview_gif(
+                local_video_path, temp_gif_path, gif_start_seconds, gif_end_seconds
+            )
+            gif_url = _upload_file_to_supabase(temp_gif_path, gif_key)
+            result["gif_public_url"] = gif_url
+            result["email_gif_url"] = gif_url
+            gif_for_meta = gif_url or expected_gif_url
+            gif_preview_body = _build_gif_preview_html(
+                lead_name,
+                expected_gif_preview_page_url,
+                expected_video_url,
+                gif_for_meta,
+                gif_w,
+                gif_h,
+            )
+            with open(temp_gif_preview_html_path, "w", encoding="utf-8") as f:
+                f.write(gif_preview_body)
+            result["gif_preview_html_url"] = _upload_file_to_supabase(
+                temp_gif_preview_html_path, gif_html_key
+            )
+        except Exception:
+            result["gif_public_url"] = None
+            result["email_gif_url"] = None
+            result["gif_preview_html_url"] = None
+
+        result["email_html_snippet"] = _compose_email_html_snippet(
+            result.get("video_public_url"),
+            result.get("email_gif_url") or result.get("gif_public_url"),
+        )
+
         return result
     finally:
         if os.path.exists(temp_thumb_path):
             os.remove(temp_thumb_path)
         if os.path.exists(temp_html_path):
             os.remove(temp_html_path)
+        if os.path.exists(temp_gif_path):
+            os.remove(temp_gif_path)
+        if os.path.exists(temp_gif_preview_html_path):
+            os.remove(temp_gif_preview_html_path)
 
 
 @app.get("/preview/metadata/{lead_slug}/{preview_id}")
@@ -787,6 +1027,8 @@ async def composite_videos(
     contacts: str = Form(...),
     skip_seconds: float = Form(3.0),
     scroll_start_seconds: float = Form(0.0),
+    gif_start_seconds: float = Form(0.0),
+    gif_end_seconds: float = Form(4.0),
 ):
     job_id = str(uuid.uuid4())
 
@@ -813,7 +1055,15 @@ async def composite_videos(
     }
 
     background_tasks.add_task(
-        run_composite, job_id, face_path, ref_audio_path, contact_list, skip_seconds, scroll_start_seconds
+        run_composite,
+        job_id,
+        face_path,
+        ref_audio_path,
+        contact_list,
+        skip_seconds,
+        scroll_start_seconds,
+        gif_start_seconds,
+        gif_end_seconds,
     )
     return {"jobId": job_id}
 
@@ -826,6 +1076,8 @@ async def composite_videos_elevenlabs(
     contacts: str = Form(...),
     skip_seconds: float = Form(3.0),
     scroll_start_seconds: float = Form(0.0),
+    gif_start_seconds: float = Form(0.0),
+    gif_end_seconds: float = Form(4.0),
 ):
     if not ELEVENLABS_API_KEY:
         return JSONResponse({"error": "ELEVENLABS_API_KEY is not configured"}, status_code=503)
@@ -861,8 +1113,28 @@ async def composite_videos_elevenlabs(
         contact_list,
         skip_seconds,
         scroll_start_seconds,
+        gif_start_seconds,
+        gif_end_seconds,
     )
     return {"jobId": job_id}
+
+
+def _tag_video(video_path: str, lead_name: str) -> None:
+    temp = video_path + ".tagged.mp4"
+    subprocess.run(
+        [
+            "ffmpeg", "-y",
+            "-i", video_path,
+            "-c", "copy",
+            "-metadata", f"title=Video for {lead_name}",
+            "-metadata", "artist=Tkrupt",
+            "-metadata", f"comment=Personalized video message for {lead_name}",
+            temp,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    os.replace(temp, video_path)
 
 
 def _overlay_face_on_scroll(scroll_path: str, face_path: str, output_path: str, scroll_start_seconds: float = 0.0):
@@ -936,6 +1208,8 @@ async def run_composite(
     contacts: list[dict],
     skip_seconds: float,
     scroll_start_seconds: float,
+    gif_start_seconds: float,
+    gif_end_seconds: float,
 ):
     for contact in contacts:
         name = contact["name"]
@@ -969,10 +1243,18 @@ async def run_composite(
                     _overlay_face_on_scroll, scroll_path, face_path, out_path, scroll_start_seconds
                 )
 
+            await asyncio.to_thread(_tag_video, out_path, name)
+
             entry: dict = {"name": name, "filename": out_fn}
             composite_jobs[job_id]["files"].append(entry)
             try:
-                preview_data = await asyncio.to_thread(_upload_lead_preview_assets, out_path, name)
+                preview_data = await asyncio.to_thread(
+                    _upload_lead_preview_assets,
+                    out_path,
+                    name,
+                    gif_start_seconds,
+                    gif_end_seconds,
+                )
                 composite_jobs[job_id]["files"][-1].update(preview_data)
             except Exception:
                 composite_jobs[job_id]["files"][-1].update(
@@ -982,8 +1264,13 @@ async def run_composite(
                         "preview_url": None,
                         "vercel_preview_url": None,
                         "supabase_preview_url": None,
+                        "image_preview_html_url": None,
+                        "gif_preview_html_url": None,
                         "video_public_url": None,
                         "thumbnail_public_url": None,
+                        "gif_public_url": None,
+                        "email_gif_url": None,
+                        "email_html_snippet": None,
                     }
                 )
             if not composite_jobs[job_id]["files"][-1].get("video_public_url"):
@@ -996,6 +1283,11 @@ async def run_composite(
             composite_jobs[job_id]["files"][-1]["public_url"] = (
                 composite_jobs[job_id]["files"][-1].get("preview_url")
                 or composite_jobs[job_id]["files"][-1].get("video_public_url")
+            )
+            _last = composite_jobs[job_id]["files"][-1]
+            _last["email_html_snippet"] = _compose_email_html_snippet(
+                _last.get("video_public_url"),
+                _last.get("email_gif_url") or _last.get("gif_public_url"),
             )
         except Exception as e:
             composite_jobs[job_id]["files"].append({"name": name, "error": str(e)})
@@ -1013,6 +1305,8 @@ async def run_composite_elevenlabs(
     contacts: list[dict],
     skip_seconds: float,
     scroll_start_seconds: float,
+    gif_start_seconds: float,
+    gif_end_seconds: float,
 ):
     voice_id: str | None = None
     try:
@@ -1049,11 +1343,18 @@ async def run_composite_elevenlabs(
                     scroll_start_seconds,
                     out_path,
                 )
+                await asyncio.to_thread(_tag_video, out_path, name)
 
                 entry: dict = {"name": name, "filename": out_fn}
                 composite_jobs[job_id]["files"].append(entry)
                 try:
-                    preview_data = await asyncio.to_thread(_upload_lead_preview_assets, out_path, name)
+                    preview_data = await asyncio.to_thread(
+                        _upload_lead_preview_assets,
+                        out_path,
+                        name,
+                        gif_start_seconds,
+                        gif_end_seconds,
+                    )
                     composite_jobs[job_id]["files"][-1].update(preview_data)
                 except Exception:
                     composite_jobs[job_id]["files"][-1].update(
@@ -1063,8 +1364,13 @@ async def run_composite_elevenlabs(
                             "preview_url": None,
                             "vercel_preview_url": None,
                             "supabase_preview_url": None,
+                            "image_preview_html_url": None,
+                            "gif_preview_html_url": None,
                             "video_public_url": None,
                             "thumbnail_public_url": None,
+                            "gif_public_url": None,
+                            "email_gif_url": None,
+                            "email_html_snippet": None,
                         }
                     )
                 if not composite_jobs[job_id]["files"][-1].get("video_public_url"):
@@ -1077,6 +1383,11 @@ async def run_composite_elevenlabs(
                 composite_jobs[job_id]["files"][-1]["public_url"] = (
                     composite_jobs[job_id]["files"][-1].get("preview_url")
                     or composite_jobs[job_id]["files"][-1].get("video_public_url")
+                )
+                _last_el = composite_jobs[job_id]["files"][-1]
+                _last_el["email_html_snippet"] = _compose_email_html_snippet(
+                    _last_el.get("video_public_url"),
+                    _last_el.get("email_gif_url") or _last_el.get("gif_public_url"),
                 )
             except Exception as exc:
                 composite_jobs[job_id]["files"].append({"name": name, "error": str(exc)})

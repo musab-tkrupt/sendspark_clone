@@ -1,25 +1,29 @@
 import type { Metadata } from "next";
-import { notFound } from "next/navigation";
 import VideoPlayer from "./VideoPlayer";
 
-type PreviewMetadata = {
-  lead_slug: string;
-  preview_id: string;
-  title: string;
-  description: string;
-  video_url: string;
-  thumbnail_url: string;
-  canonical_url: string;
-};
+const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+const SUPABASE_BUCKET = process.env.NEXT_PUBLIC_SUPABASE_BUCKET ?? "Videos";
+const APP_URL = (process.env.NEXT_PUBLIC_APP_URL ?? "").replace(/\/$/, "");
 
-const API = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+function supabasePublicUrl(objectKey: string): string {
+  return `${SUPABASE_URL}/storage/v1/object/public/${SUPABASE_BUCKET}/${objectKey}`;
+}
 
-async function getPreviewMetadata(lead: string, id: string): Promise<PreviewMetadata | null> {
-  const res = await fetch(`${API}/preview/metadata/${encodeURIComponent(lead)}/${encodeURIComponent(id)}`, {
-    cache: "no-store",
-  });
-  if (!res.ok) return null;
-  return (await res.json()) as PreviewMetadata;
+/** Preview bundle objects are stored at previews/{lead}/{id}/… (no bucket path prefix). */
+function previewUrls(leadSlug: string, previewId: string) {
+  const root = `previews/${leadSlug}/${previewId}`;
+  return {
+    video: supabasePublicUrl(`${root}/video.mp4`),
+    thumbnail: supabasePublicUrl(`${root}/thumbnail.jpg`),
+    canonical: APP_URL ? `${APP_URL}/v/${leadSlug}/${previewId}` : "",
+  };
+}
+
+function displayName(slug: string): string {
+  return slug
+    .split("-")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }
 
 export async function generateMetadata({
@@ -28,30 +32,28 @@ export async function generateMetadata({
   params: Promise<{ lead: string; id: string }>;
 }): Promise<Metadata> {
   const { lead, id } = await params;
-  const data = await getPreviewMetadata(lead, id);
-  if (!data) {
-    return {
-      title: "Preview not found",
-      description: "This preview is unavailable.",
-    };
-  }
+  const name = displayName(lead);
+  const title = `${name} — Personalized Video`;
+  const description = `A personalized video message for ${name}.`;
+  const urls = previewUrls(lead, id);
+
   return {
-    title: data.title,
-    description: data.description,
-    alternates: { canonical: data.canonical_url },
+    title,
+    description,
+    ...(urls.canonical && { alternates: { canonical: urls.canonical } }),
     openGraph: {
-      title: data.title,
-      description: data.description,
+      title,
+      description,
       type: "video.other",
-      url: data.canonical_url,
-      images: [{ url: data.thumbnail_url, width: 1280, height: 720 }],
-      videos: [{ url: data.video_url, secureUrl: data.video_url, type: "video/mp4", width: 1280, height: 720 }],
+      ...(urls.canonical && { url: urls.canonical }),
+      images: [{ url: urls.thumbnail, width: 1280, height: 720 }],
+      videos: [{ url: urls.video, secureUrl: urls.video, type: "video/mp4", width: 1280, height: 720 }],
     },
     twitter: {
       card: "summary_large_image",
-      title: data.title,
-      description: data.description,
-      images: [data.thumbnail_url],
+      title,
+      description,
+      images: [urls.thumbnail],
     },
   };
 }
@@ -62,17 +64,17 @@ export default async function PreviewPage({
   params: Promise<{ lead: string; id: string }>;
 }) {
   const { lead, id } = await params;
-  const data = await getPreviewMetadata(lead, id);
-  if (!data) notFound();
+  const name = displayName(lead);
+  const urls = previewUrls(lead, id);
 
   return (
     <main className="min-h-screen bg-[#0b0f1a] text-zinc-100 flex flex-col items-center justify-center p-4 sm:p-8">
       <div className="w-full max-w-4xl">
         <div className="mb-4">
-          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">{data.title}</h1>
-          <p className="text-zinc-400 mt-1 text-sm">{data.description}</p>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight">Video for {name}</h1>
+          <p className="text-zinc-400 mt-1 text-sm">Click to watch your personalized message.</p>
         </div>
-        <VideoPlayer src={data.video_url} poster={data.thumbnail_url} />
+        <VideoPlayer src={urls.video} poster={urls.thumbnail} />
       </div>
     </main>
   );
