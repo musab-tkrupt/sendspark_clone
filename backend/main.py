@@ -65,7 +65,7 @@ SUPABASE_PATH_PREFIX = os.getenv("SUPABASE_PATH_PREFIX", "sendspark").strip().st
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
 ELEVENLABS_MODEL_ID = os.getenv("ELEVENLABS_MODEL_ID", "eleven_multilingual_v2").strip()
 ELEVENLABS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128").strip()
-FRONTEND_URL = os.getenv("FRONTEND_URL", "https://tkrupt.com").strip().rstrip("/")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://sendspark-clone.vercel.app").strip().rstrip("/")
 SCROLL_STATUS_STALE_SECONDS = int(os.getenv("SCROLL_STATUS_STALE_SECONDS", "90"))
 ENABLE_CHATTERBOX = os.getenv("ENABLE_CHATTERBOX", "false").strip().lower() in {
     "1",
@@ -139,6 +139,13 @@ def _frontend_preview_url(lead_slug: str, preview_id: str) -> str | None:
     if not FRONTEND_URL:
         return None
     return f"{FRONTEND_URL}/v/{lead_slug}/{preview_id}"
+
+
+def _frontend_asset_url(lead_slug: str, preview_id: str, asset: str) -> str | None:
+    if not FRONTEND_URL:
+        return None
+    asset = asset.lstrip("/")
+    return f"{FRONTEND_URL}/v/{lead_slug}/{preview_id}/{asset}"
 
 
 def _compose_email_html_snippet(video_public_url: str | None, gif_url: str | None) -> str | None:
@@ -505,6 +512,13 @@ def _upload_lead_preview_assets(
     expected_preview_url = _supabase_public_url(html_key) or ""
     expected_gif_url = _supabase_public_url(gif_key) or ""
     expected_gif_preview_page_url = _supabase_public_url(gif_html_key) or ""
+    short_preview_url = _frontend_preview_url(lead_slug, preview_id) or expected_preview_url
+    short_video_url = _frontend_asset_url(lead_slug, preview_id, "video.mp4")
+    short_thumb_url = _frontend_asset_url(lead_slug, preview_id, "thumbnail.jpg")
+    short_gif_url = _frontend_asset_url(lead_slug, preview_id, "preview.gif")
+    short_image_html_url = _frontend_asset_url(lead_slug, preview_id, "index.html")
+    short_gif_html_url = _frontend_asset_url(lead_slug, preview_id, "gif-preview.html")
+    short_gif_preview_page_url = short_gif_html_url or expected_gif_preview_page_url
 
     temp_thumb_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_thumbnail.jpg")
     temp_html_path = os.path.join(BACKEND_ROOT, "temp", f"{preview_id}_index.html")
@@ -519,7 +533,7 @@ def _upload_lead_preview_assets(
             video_width, video_height = 1280, 720
         preview_html = _build_preview_html(
             lead_name=lead_name,
-            preview_url=expected_preview_url,
+            preview_url=short_preview_url,
             video_url=expected_video_url,
             thumbnail_url=expected_thumb_url,
             video_width=video_width,
@@ -528,13 +542,15 @@ def _upload_lead_preview_assets(
         with open(temp_html_path, "w", encoding="utf-8") as f:
             f.write(preview_html)
 
-        result["video_public_url"] = _upload_file_to_supabase(local_video_path, video_key)
-        result["thumbnail_public_url"] = _upload_file_to_supabase(temp_thumb_path, thumb_key)
+        raw_video_url = _upload_file_to_supabase(local_video_path, video_key)
+        raw_thumbnail_url = _upload_file_to_supabase(temp_thumb_path, thumb_key)
+        result["video_public_url"] = short_video_url if raw_video_url else None
+        result["thumbnail_public_url"] = short_thumb_url if raw_thumbnail_url else None
         html_preview_url = _upload_file_to_supabase(temp_html_path, html_key)
         result["supabase_preview_url"] = html_preview_url
-        result["image_preview_html_url"] = html_preview_url
+        result["image_preview_html_url"] = short_image_html_url if html_preview_url else None
         result["preview_url"] = (
-            result["image_preview_html_url"] or result["vercel_preview_url"] or result["video_public_url"]
+            result["vercel_preview_url"] or result["image_preview_html_url"] or result["video_public_url"]
         )
 
         gif_w, gif_h = 600, max(2, int(round(600 * video_height / max(video_width, 1))))
@@ -543,12 +559,12 @@ def _upload_lead_preview_assets(
                 local_video_path, temp_gif_path, gif_start_seconds, gif_end_seconds
             )
             gif_url = _upload_file_to_supabase(temp_gif_path, gif_key)
-            result["gif_public_url"] = gif_url
-            result["email_gif_url"] = gif_url
+            result["gif_public_url"] = short_gif_url if gif_url else None
+            result["email_gif_url"] = result["gif_public_url"]
             gif_for_meta = gif_url or expected_gif_url
             gif_preview_body = _build_gif_preview_html(
                 lead_name,
-                expected_gif_preview_page_url,
+                short_gif_preview_page_url,
                 expected_video_url,
                 gif_for_meta,
                 gif_w,
@@ -556,9 +572,8 @@ def _upload_lead_preview_assets(
             )
             with open(temp_gif_preview_html_path, "w", encoding="utf-8") as f:
                 f.write(gif_preview_body)
-            result["gif_preview_html_url"] = _upload_file_to_supabase(
-                temp_gif_preview_html_path, gif_html_key
-            )
+            raw_gif_preview_url = _upload_file_to_supabase(temp_gif_preview_html_path, gif_html_key)
+            result["gif_preview_html_url"] = short_gif_html_url if raw_gif_preview_url else None
         except Exception:
             result["gif_public_url"] = None
             result["email_gif_url"] = None

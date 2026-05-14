@@ -517,6 +517,10 @@ export default function SendSpark() {
   // ── Step 4: composite ─────────────────────────────────────────────────────
   async function processVideos() {
     if (!recordedBlob) return;
+    if (isElevenLabsMode && !voiceFile) {
+      setError("ElevenLabs mode requires a voice reference file.");
+      return;
+    }
     setIsProcessing(true);
     setError(null);
     // Clear previous run immediately so user sees fresh generation state.
@@ -1239,7 +1243,12 @@ export default function SendSpark() {
                       <input
                         readOnly
                         value={entry.email_gif_url || entry.gif_public_url || ""}
-                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                        onClick={() => {
+                          const href = entry.email_gif_url || entry.gif_public_url || "";
+                          if (href) window.open(href, "_blank", "noopener,noreferrer");
+                        }}
+                        title="Open in new tab"
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 cursor-pointer"
                       />
                       <button
                         type="button"
@@ -1262,7 +1271,12 @@ export default function SendSpark() {
                       <input
                         readOnly
                         value={entry.image_preview_html_url || entry.supabase_preview_url || ""}
-                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                        onClick={() => {
+                          const href = entry.image_preview_html_url || entry.supabase_preview_url || "";
+                          if (href) window.open(href, "_blank", "noopener,noreferrer");
+                        }}
+                        title="Open in new tab"
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 cursor-pointer"
                       />
                       <button
                         type="button"
@@ -1287,7 +1301,12 @@ export default function SendSpark() {
                       <input
                         readOnly
                         value={entry.gif_preview_html_url}
-                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300"
+                        onClick={() => {
+                          const href = entry.gif_preview_html_url || "";
+                          if (href) window.open(href, "_blank", "noopener,noreferrer");
+                        }}
+                        title="Open in new tab"
+                        className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 cursor-pointer"
                       />
                       <button
                         type="button"
