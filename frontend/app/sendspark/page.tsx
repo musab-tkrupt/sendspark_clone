@@ -21,6 +21,7 @@ type CompositeFile = {
   name: string;
   filename?: string;
   public_url?: string;
+  supabase_preview_url?: string; // <--- Add this line here
   preview_url?: string | null;
   video_public_url?: string | null;
   thumbnail_public_url?: string | null;
